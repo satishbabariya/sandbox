@@ -1,6 +1,7 @@
 import Containerization
 import ContainerizationEXT4
 import ContainerizationOCI
+import ContainerizationOS
 import Darwin
 import Foundation
 import Logging
@@ -59,6 +60,10 @@ public struct SandboxSpec: Sendable {
     public var docker: Bool
     /// Size of that block device.
     public var dockerDiskBytes: UInt64
+    /// The host terminal to attach when `terminal` is set. Supplying it makes
+    /// the guest process interactive: it gets a PTY, and keystrokes and window
+    /// size changes reach it.
+    public var hostTerminal: Terminal?
     /// Where the guest's stdout goes. Defaults to the host's stdout.
     public var stdout: (any Writer)?
     /// Where the guest's stderr goes. Defaults to the host's stderr.
@@ -78,6 +83,7 @@ public struct SandboxSpec: Sendable {
         cloneWorkspace: Bool = false,
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
+        hostTerminal: Terminal? = nil,
         privileged: Bool = false,
         credentials: [CredentialBinding] = [],
         ports: [PortForward] = [],
@@ -99,6 +105,7 @@ public struct SandboxSpec: Sendable {
         self.cloneWorkspace = cloneWorkspace
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
+        self.hostTerminal = hostTerminal
         self.privileged = privileged
         self.credentials = credentials
         self.ports = ports
@@ -250,8 +257,16 @@ public actor Sandbox {
             if spec.privileged {
                 config.process.capabilities = .allCapabilities
             }
-            config.process.stdout = spec.stdout
-            config.process.stderr = spec.stderr
+            if spec.terminal, let host = spec.hostTerminal {
+                // A PTY carries both streams, and the runtime rejects a
+                // separately configured stderr when a terminal is attached.
+                config.process.stdin = host
+                config.process.stdout = host
+                config.process.stderr = nil
+            } else {
+                config.process.stdout = spec.stdout
+                config.process.stderr = spec.stderr
+            }
 
             if !spec.command.isEmpty {
                 config.process.arguments = spec.command
@@ -535,6 +550,12 @@ public actor Sandbox {
     public func copyOut(from source: String, to destination: URL) async throws {
         guard let container else { throw SandboxError.notRunning }
         try await container.copyOut(from: URL(filePath: source), to: destination)
+    }
+
+    /// Tell the guest its terminal changed size.
+    public func resize(to size: Terminal.Size) async throws {
+        guard let container else { throw SandboxError.notRunning }
+        try await container.resize(to: size)
     }
 
     public func wait() async throws -> Int32 {

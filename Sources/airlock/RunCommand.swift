@@ -1,5 +1,8 @@
 import AirlockKit
 import ArgumentParser
+import Containerization
+import ContainerizationOS
+import Darwin
 import Foundation
 
 struct RunCommand: AsyncParsableCommand {
@@ -50,6 +53,12 @@ struct RunCommand: AsyncParsableCommand {
         name: .long,
         help: "Work on a private git clone of the workspace instead of your tree.")
     var clone: Bool = false
+
+    @Flag(
+        name: [.customShort("t"), .long],
+        inversion: .prefixedNo,
+        help: "Attach a terminal. Defaults to on when stdin is a terminal.")
+    var tty: Bool = true
 
     @Option(
         name: [.customShort("p"), .long],
@@ -191,8 +200,20 @@ struct RunCommand: AsyncParsableCommand {
             return
         }
 
-        var spec = try launch.sandboxSpec()
-        spec.terminal = false
+        // An agent like Claude Code is a full-screen program: without a PTY it
+        // cannot render, and keystrokes never reach it. Attach one whenever we
+        // actually have a terminal to attach.
+        let interactive = tty && isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
+        let hostTerminal: Terminal? = interactive ? try? Terminal.current : nil
+
+        var spec = try launch.sandboxSpec(terminal: hostTerminal != nil)
+        spec.hostTerminal = hostTerminal
+        if hostTerminal != nil {
+            // Programs check TERM before drawing anything.
+            spec.environment["TERM"] =
+                ProcessInfo.processInfo.environment["TERM"]
+                ?? "xterm-256color"
+        }
         let sandbox = Sandbox(spec: spec, paths: paths)
 
         // Only a sandbox the user can refer to later earns a record. An
@@ -202,12 +223,25 @@ struct RunCommand: AsyncParsableCommand {
         let persist = name != nil
         if persist { try store.save(launch.record) }
 
+        if let hostTerminal {
+            try hostTerminal.setraw()
+        }
+        // Always restore the terminal, including on a thrown error — leaving a
+        // shell in raw mode makes it unusable.
+        defer { hostTerminal?.tryReset() }
+
         try await sandbox.start(gatewayBinary: gateway)
         for forward in forwards {
             FileHandle.standardError.write(
                 Data("airlock: published \(forward)\n".utf8))
         }
-        let status = try await sandbox.wait()
+
+        let status: Int32
+        if let hostTerminal {
+            status = try await Self.attach(sandbox, terminal: hostTerminal)
+        } else {
+            status = try await sandbox.wait()
+        }
 
         if showPolicyLog {
             let records = await sandbox.auditRecords()
@@ -270,6 +304,34 @@ struct RunCommand: AsyncParsableCommand {
                 throw CleanExit.message("timed out waiting for sandbox to start")
             }
             try await Task.sleep(for: .milliseconds(100))
+        }
+    }
+
+    /// Run an interactive session: keep the guest's PTY in step with ours until
+    /// the process exits.
+    static func attach(_ sandbox: Sandbox, terminal: Terminal) async throws -> Int32 {
+        try? await sandbox.resize(to: terminal.size)
+
+        let resizes = AsyncSignalHandler.create(notify: [SIGWINCH])
+        return try await withThrowingTaskGroup(of: Int32?.self) { group in
+            group.addTask {
+                for await _ in resizes.signals {
+                    try? await sandbox.resize(to: terminal.size)
+                }
+                return nil
+            }
+            group.addTask {
+                try await sandbox.wait()
+            }
+            // The first non-nil result is the exit status; the resize task only
+            // ends when cancelled.
+            while let result = try await group.next() {
+                if let status = result {
+                    group.cancelAll()
+                    return status
+                }
+            }
+            return 0
         }
     }
 

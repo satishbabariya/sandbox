@@ -23,6 +23,7 @@ let package = Package(
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
+                .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -33,6 +34,7 @@ let package = Package(
             dependencies: [
                 "AirlockKit",
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
