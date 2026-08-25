@@ -7,7 +7,11 @@ struct Airlock: AsyncParsableCommand {
         commandName: "airlock",
         abstract: "Run coding agents in sandboxes whose network egress they cannot bypass.",
         version: AirlockVersion.current,
-        subcommands: [RunCommand.self, PolicyCommand.self]
+        subcommands: [
+            RunCommand.self, ExecCommand.self, ListCommand.self,
+            StopCommand.self, RemoveCommand.self, LogsCommand.self,
+            PolicyCommand.self, SuperviseCommand.self,
+        ]
     )
 }
 

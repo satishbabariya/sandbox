@@ -44,6 +44,11 @@ struct RunCommand: AsyncParsableCommand {
     var showPolicyLog: Bool = false
 
     @Flag(
+        name: [.short, .long],
+        help: "Leave the sandbox running in the background and print its name.")
+    var detach: Bool = false
+
+    @Flag(
         name: .long,
         help: """
             Grant every Linux capability inside the sandbox. Does not weaken             egress policy, which is enforced outside the guest.
@@ -53,34 +58,51 @@ struct RunCommand: AsyncParsableCommand {
     func run() async throws {
         let policy = try NetworkPolicy(allow: allow, deny: deny)
         let id = name ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
+        try SandboxStore.validate(name: id)
 
-        // captureForPassthrough hands us the `--` separator too; the guest must
-        // not see it as argv[0].
         var command = self.command
         if command.first == "--" { command.removeFirst() }
 
-        var spec = SandboxSpec(
-            id: id,
-            image: image,
-            command: command,
-            policy: policy,
-            cpus: cpus,
-            memoryInBytes: try Self.parseMemory(memory),
-            privileged: privileged
-        )
-        if let workspace {
-            spec.workspace = URL(filePath: workspace).standardizedFileURL
-        }
-
         let paths = AirlockPaths()
-        let sandbox = Sandbox(spec: spec, paths: paths)
-        let gateway = InstallLayout.gatewayBinary()
+        let store = SandboxStore(paths: paths)
+
+        if let existing = try? store.load(id), existing.state == .running {
+            throw CleanExit.message(
+                "sandbox '\(id)' is already running; use airlock exec \(id) -- <cmd>")
+        }
 
         if policy.allow.isEmpty {
             FileHandle.standardError.write(
                 Data("airlock: no --allow rules; this sandbox reaches nothing\n".utf8))
         }
 
+        var launch = LaunchSpec(
+            name: id,
+            image: image,
+            command: command,
+            allow: allow,
+            deny: deny,
+            cpus: cpus,
+            memoryInBytes: try Self.parseMemory(memory),
+            privileged: privileged
+        )
+        if let workspace {
+            launch.workspace = URL(filePath: workspace).standardizedFileURL
+                .path(percentEncoded: false)
+        }
+
+        if detach {
+            try await Self.spawnSupervisor(launch: launch, paths: paths, store: store)
+            print(id)
+            return
+        }
+
+        var spec = try launch.sandboxSpec()
+        spec.terminal = false
+        let sandbox = Sandbox(spec: spec, paths: paths)
+        let gateway = InstallLayout.gatewayBinary()
+
+        try store.save(launch.record)
         try await sandbox.start(gatewayBinary: gateway)
         let status = try await sandbox.wait()
 
@@ -98,7 +120,50 @@ struct RunCommand: AsyncParsableCommand {
         }
 
         await sandbox.stop()
+        try? store.remove(id)
         if status != 0 { throw ExitCode(status) }
+    }
+
+    /// Launch the supervisor that will hold this sandbox after we exit.
+    ///
+    /// The child is fully detached — its own session, streams redirected — so
+    /// closing the terminal that started it does not take the sandbox with it.
+    static func spawnSupervisor(
+        launch: LaunchSpec, paths: AirlockPaths, store: SandboxStore
+    ) async throws {
+        let directory = paths.socketDirectory(launch.name)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let specPath = directory.appending(path: "launch.json")
+        try JSONEncoder().encode(launch).write(to: specPath, options: .atomic)
+
+        let process = Process()
+        process.executableURL = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        process.arguments = ["supervise", "--spec", specPath.path]
+
+        let logPath = directory.appending(path: "supervisor.log")
+        FileManager.default.createFile(atPath: logPath.path, contents: nil)
+        let log = try FileHandle(forWritingTo: logPath)
+        process.standardOutput = log
+        process.standardError = log
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+
+        // Wait for the control socket, which is the supervisor's own signal
+        // that the VM is up and reachable.
+        let socket = ControlClient.path(for: launch.name, paths: paths)
+        let deadline = Date().addingTimeInterval(180)
+        while !FileManager.default.fileExists(atPath: socket.path) {
+            guard process.isRunning else {
+                let detail = (try? String(contentsOf: logPath, encoding: .utf8)) ?? ""
+                throw CleanExit.message(
+                    "sandbox failed to start:\n\(detail.suffix(2000))")
+            }
+            guard Date() < deadline else {
+                process.terminate()
+                throw CleanExit.message("timed out waiting for sandbox to start")
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     static func parseMemory(_ raw: String) throws -> UInt64 {

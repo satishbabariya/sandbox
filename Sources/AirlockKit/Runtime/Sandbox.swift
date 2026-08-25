@@ -205,6 +205,38 @@ public actor Sandbox {
     /// reproducible rather than tracking whatever :latest happens to be.
     public static let initfsReference = "ghcr.io/apple/containerization/vminit:0.30.0"
 
+    /// Run an additional process inside the already-running sandbox.
+    ///
+    /// The process inherits the sandbox's network position exactly: it is in
+    /// the same VM behind the same single interface, so policy applies to it
+    /// without anything extra being wired up.
+    public func exec(
+        _ command: [String],
+        environment: [String: String] = [:],
+        workingDirectory: String? = nil,
+        stdout: (any Writer)? = nil,
+        stderr: (any Writer)? = nil,
+        terminal: Bool = false
+    ) async throws -> LinuxProcess {
+        guard let container else { throw SandboxError.notRunning }
+        var config = LinuxProcessConfiguration()
+        config.arguments = command
+        config.terminal = terminal
+        config.stdout = stdout ?? StreamWriter.standardOutput
+        config.stderr = stderr ?? StreamWriter.standardError
+        config.workingDirectory = workingDirectory ?? spec.workspaceDestination
+        for (key, value) in environment {
+            config.environmentVariables.append("\(key)=\(value)")
+        }
+        if spec.privileged {
+            config.capabilities = .allCapabilities
+        }
+        let id = "exec-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
+        let process = try await container.exec(id, configuration: config)
+        try await process.start()
+        return process
+    }
+
     public func wait() async throws -> Int32 {
         guard let container else { throw SandboxError.notRunning }
         let status = try await container.wait()

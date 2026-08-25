@@ -28,6 +28,7 @@ let package = Package(
             name: "airlock",
             dependencies: [
                 "AirlockKit",
+                .product(name: "Containerization", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
