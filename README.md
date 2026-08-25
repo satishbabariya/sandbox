@@ -3,9 +3,8 @@
 Run coding agents on Apple silicon in sandboxes whose network egress they
 cannot bypass — even as root inside the sandbox.
 
-> Status: early. The enforcement boundary works and is tested against live VMs.
-> Persistence, credential brokering, and in-sandbox Docker are not built yet.
-> See [Status](#status).
+> Status: early but complete for its first scope. Everything below is verified
+> against live VMs, not asserted. See [Status](#status).
 
 ```console
 $ airlock run alpine:3.20 --allow '*.anthropic.com' -- /bin/sh
@@ -76,11 +75,19 @@ Against live VMs on `alpine:3.20`:
 | Raw IP, different allow | `deny tcp … unresolved-address` |
 | uid 0, proxy vars cleared | still refused |
 | **`--privileged`** (`CapEff: 000001ffffffffff`), route replaced | still refused |
+| `exec` into a running sandbox | same policy applies |
+| **container started by dockerd inside the sandbox** | same policy applies |
+| `--secret anthropic` | guest sees `airlock-managed`; real value absent from the guest |
 
-That last row is the one that matters: with **every Linux capability**, root
-replaced the default route and still could not get out. It could not create a
-second interface, and pointing the route elsewhere only broke its own
-networking.
+The `--privileged` row is the one that matters. With **every Linux capability**,
+root replaced the default route and still could not get out: it could not create
+a second interface, and pointing the route elsewhere only broke its own
+networking. The guarantee rests on there being one device that terminates in the
+airlock process, not on dropping capabilities.
+
+The dockerd row matters for a different reason — a container started *inside* the
+sandbox inherits the policy with nothing extra wired up, because it is behind the
+same single interface.
 
 ## What this does NOT protect against
 
@@ -108,6 +115,41 @@ $ make install-kernel # fetches a guest kernel into ~/.airlock
 The CLI **must** be codesigned with `com.apple.security.virtualization` or
 Virtualization refuses to start the VM. `make build` always signs; a bare
 `swift build` produces a binary that fails at VM start with an opaque error.
+
+## Credentials the sandbox never holds
+
+```console
+$ airlock secret set anthropic          # stored in the macOS Keychain
+$ airlock run claude-image --secret anthropic -- claude
+```
+
+Inside the sandbox, `ANTHROPIC_API_KEY` reads `airlock-managed`. The real value
+is substituted on the host, per request, and only for `api.anthropic.com` — so a
+sentinel copied out of the sandbox is worthless.
+
+Interception is deliberately narrow: only after policy has allowed the dial,
+only on 443, and only for a hostname a credential is bound to. Everything else
+stays end-to-end encrypted between guest and server. Upstream certificates are
+still verified.
+
+Trust is installed by sharing a directory containing **only** the CA
+certificate, read-only — never the runtime directory, which holds the resolved
+secrets. The CA is appended to the system bundle rather than replacing it, and
+`NODE_EXTRA_CA_CERTS` is set separately because node ignores the bundle.
+
+## Docker inside the sandbox
+
+```console
+$ airlock run docker:28-dind --docker --allow '*.docker.io' -- /bin/sh
+```
+
+dockerd gets its own ext4 disk at `/var/lib/docker`. Containers it starts are
+behind the same single interface, so **they inherit the same egress policy** with
+nothing extra wired up.
+
+Implies `--privileged`. The guest kernel does not expose the nf_tables netlink
+API, so airlock points iptables at the legacy backend when the nft shim is
+broken — otherwise dockerd cannot create its NAT chain.
 
 ## Usage
 
@@ -153,15 +195,23 @@ disagreed with the enforcement point would be worse than no CLI.
 | `Sources/AirlockKit/Policy` | Pattern matching, deny-wins evaluation |
 | `Sources/AirlockKit/Network` | `GuestLink`, `AirlockInterface`, gateway supervisor |
 | `Sources/AirlockKit/Runtime` | Sandbox lifecycle |
+| `Sources/AirlockKit/Credentials` | Keychain store, bindings, sentinel |
 | `netstack/` | Pinned upstream SHA + our patches. Upstream is not vendored, so the entire security-relevant diff is reviewable in one directory |
 
 ## Status
 
-Working: enforced egress (DNS gate + dial gate), policy audit log, sandbox
-boot/run/stop, workspace mounts, `--privileged`.
+**Working:** enforced egress (DNS gate + dial gate), policy audit log, named
+persistent sandboxes with `run --detach` / `exec` / `ls` / `stop` / `rm` /
+`logs`, credential brokering via the Keychain, a private dockerd per sandbox,
+workspace mounts, `--privileged`.
 
-Not yet: named persistent sandboxes and `exec`, credential brokering, dockerd
-inside the sandbox, SNI inspection, dynamic filesystem approval.
+**Not yet:** SNI inspection (hostname precision on shared CDN addresses without
+interception), dynamic filesystem approval (`VZHotplugProvider`), kit-format
+compatibility, an MCP gateway, OAuth credential flows, x86 emulation.
+
+**Known limitation, unverified:** whether revoking a shared directory closes
+file descriptors the guest already holds open. Until that is settled, revocation
+is not offered as a security control.
 
 ## License
 

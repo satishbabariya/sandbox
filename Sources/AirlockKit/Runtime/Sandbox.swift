@@ -106,6 +106,17 @@ public struct AirlockPaths: Sendable {
     public var images: URL { root.appending(path: "images") }
     public func runtime(_ id: String) -> URL { root.appending(path: "run/\(id)") }
 
+    /// Where ContainerManager unpacks a sandbox's rootfs. Removing a sandbox
+    /// has to clear this too, or the name cannot be reused.
+    public func containerRoot(_ id: String) -> URL {
+        images.appending(path: "containers/\(id)")
+    }
+
+    /// Everything a single sandbox owns on disk.
+    public func allDirectories(_ id: String) -> [URL] {
+        [runtime(id), socketDirectory(id), containerRoot(id)]
+    }
+
     /// `sun_path` is 104 bytes, and the gateway sockets live in the runtime
     /// directory, so keep that path short by placing sockets under /tmp.
     public func socketDirectory(_ id: String) -> URL {
@@ -193,6 +204,14 @@ public actor Sandbox {
             initfsReference: Self.initfsReference,
             imageStore: imageStore
         )
+
+        // A crashed or killed run can leave the rootfs directory behind. The
+        // store is the source of truth for whether a name is taken, so if we
+        // got this far the leftovers are ours to clear.
+        let containerRoot = paths.containerRoot(spec.id)
+        if FileManager.default.fileExists(atPath: containerRoot.path) {
+            try? FileManager.default.removeItem(at: containerRoot)
+        }
 
         let spec = self.spec
         let container = try await mgr.create(

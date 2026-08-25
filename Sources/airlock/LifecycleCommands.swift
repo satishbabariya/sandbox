@@ -196,8 +196,9 @@ struct RemoveCommand: AsyncParsableCommand {
         }
 
         try store.remove(name)
-        try? FileManager.default.removeItem(at: paths.socketDirectory(name))
-        try? FileManager.default.removeItem(at: paths.runtime(name))
+        for directory in paths.allDirectories(name) {
+            try? FileManager.default.removeItem(at: directory)
+        }
         print("removed \(name)")
     }
 }
@@ -220,5 +221,29 @@ struct LogsCommand: AsyncParsableCommand {
             return
         }
         FileHandle.standardOutput.write(data)
+    }
+}
+
+struct PruneCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "prune",
+        abstract: "Remove every stopped sandbox and its runtime state."
+    )
+
+    func run() async throws {
+        let paths = AirlockPaths()
+        let store = SandboxStore(paths: paths)
+        let stopped = store.list().filter { $0.state == .stopped }
+        guard !stopped.isEmpty else {
+            print("nothing to prune")
+            return
+        }
+        for record in stopped {
+            try? store.remove(record.name)
+            for directory in paths.allDirectories(record.name) {
+                try? FileManager.default.removeItem(at: directory)
+            }
+            print("removed \(record.name)")
+        }
     }
 }

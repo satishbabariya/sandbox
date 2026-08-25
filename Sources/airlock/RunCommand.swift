@@ -131,7 +131,13 @@ struct RunCommand: AsyncParsableCommand {
         let sandbox = Sandbox(spec: spec, paths: paths)
         let gateway = InstallLayout.gatewayBinary()
 
-        try store.save(launch.record)
+        // Only a sandbox the user can refer to later earns a record. An
+        // auto-named foreground run is ephemeral, and persisting it would
+        // litter `airlock ls` with entries nobody can act on — including when
+        // the run is interrupted before it can clean up.
+        let persist = name != nil
+        if persist { try store.save(launch.record) }
+
         try await sandbox.start(gatewayBinary: gateway)
         let status = try await sandbox.wait()
 
@@ -149,7 +155,11 @@ struct RunCommand: AsyncParsableCommand {
         }
 
         await sandbox.stop()
-        try? store.remove(id)
+        if persist {
+            var finished = launch.record
+            finished.supervisorPID = nil
+            try? store.save(finished)
+        }
         if status != 0 { throw ExitCode(status) }
     }
 

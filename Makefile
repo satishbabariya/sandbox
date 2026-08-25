@@ -77,3 +77,7 @@ clean:
 	@swift package clean
 	@rm -rf .build
 	@$(MAKE) -C netstack clean
+
+.PHONY: acceptance
+acceptance: build
+	@scripts/acceptance.sh
