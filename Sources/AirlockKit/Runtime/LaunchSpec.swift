@@ -20,6 +20,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var privileged: Bool
     /// Services whose credentials the broker should inject.
     public var secrets: [String]
+    /// Give the sandbox its own dockerd.
+    public var docker: Bool
 
     public init(
         name: String,
@@ -33,7 +35,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         workspace: String? = nil,
         workspaceDestination: String = "/workspace",
         privileged: Bool = false,
-        secrets: [String] = []
+        secrets: [String] = [],
+        docker: Bool = false
     ) {
         self.name = name
         self.image = image
@@ -47,6 +50,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.workspaceDestination = workspaceDestination
         self.privileged = privileged
         self.secrets = secrets
+        self.docker = docker
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -68,6 +72,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             terminal: terminal,
             privileged: privileged,
             credentials: bindings,
+            docker: docker,
             stdout: stdout,
             stderr: stderr
         )

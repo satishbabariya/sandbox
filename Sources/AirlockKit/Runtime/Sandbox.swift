@@ -1,7 +1,9 @@
 import Containerization
+import ContainerizationEXT4
 import ContainerizationOCI
 import Foundation
 import Logging
+import SystemPackage
 
 public enum SandboxError: Error, CustomStringConvertible {
     case kernelNotFound(URL)
@@ -43,6 +45,10 @@ public struct SandboxSpec: Sendable {
     public var privileged: Bool
     /// Credentials to broker. The guest receives a sentinel, never the secret.
     public var credentials: [CredentialBinding]
+    /// Give the sandbox its own dockerd, backed by a dedicated block device.
+    public var docker: Bool
+    /// Size of that block device.
+    public var dockerDiskBytes: UInt64
     /// Where the guest's stdout goes. Defaults to the host's stdout.
     public var stdout: (any Writer)?
     /// Where the guest's stderr goes. Defaults to the host's stderr.
@@ -61,6 +67,8 @@ public struct SandboxSpec: Sendable {
         terminal: Bool = false,
         privileged: Bool = false,
         credentials: [CredentialBinding] = [],
+        docker: Bool = false,
+        dockerDiskBytes: UInt64 = 20 * 1024 * 1024 * 1024,
         stdout: (any Writer)? = nil,
         stderr: (any Writer)? = nil
     ) {
@@ -76,6 +84,8 @@ public struct SandboxSpec: Sendable {
         self.terminal = terminal
         self.privileged = privileged
         self.credentials = credentials
+        self.docker = docker
+        self.dockerDiskBytes = dockerDiskBytes
         self.stdout = stdout ?? StreamWriter.standardOutput
         self.stderr = stderr ?? StreamWriter.standardError
     }
@@ -152,6 +162,20 @@ public actor Sandbox {
         let link = try await supervisor.start()
         self.netstack = supervisor
 
+        // A dedicated block device for the image store. Layers are large and
+        // churn, and keeping them off the rootfs means the sandbox's own disk
+        // is not consumed by whatever the agent pulls.
+        var dockerDisk: URL?
+        if spec.docker {
+            let disk = runtimeDir.appending(path: "docker.ext4")
+            if !FileManager.default.fileExists(atPath: disk.path) {
+                let formatter = try EXT4.Formatter(
+                    FilePath(disk.path), minDiskSize: spec.dockerDiskBytes)
+                try formatter.close()
+            }
+            dockerDisk = disk
+        }
+
         let caCertificate = supervisor.caCertificatePath
         let caIsPresent = FileManager.default.fileExists(atPath: caCertificate.path)
         let guestShare = supervisor.guestShareDirectory
@@ -191,6 +215,22 @@ public actor Sandbox {
 
             if !spec.command.isEmpty {
                 config.process.arguments = spec.command
+            }
+
+            if let dockerDisk {
+                config.mounts.append(
+                    .block(
+                        format: "ext4",
+                        source: dockerDisk.path(percentEncoded: false),
+                        destination: "/var/lib/docker"
+                    ))
+                // dockerd manages its own namespaces, bridges, and iptables
+                // rules, which needs the full capability set. It does not
+                // weaken egress: containers it starts sit behind the same
+                // single interface as everything else in the VM.
+                config.process.capabilities = .allCapabilities
+                config.process.arguments = Self.dockerBootstrap(
+                    wrapping: config.process.arguments)
             }
 
             if caIsPresent {
@@ -233,6 +273,43 @@ public actor Sandbox {
         try await container.create()
         try await container.start()
         logger?.info("sandbox started", metadata: ["id": .string(spec.id)])
+    }
+
+    /// Start dockerd in the background, wait for its socket, then exec the
+    /// real command. Failing to start is reported rather than silently
+    /// leaving the agent with a broken docker.
+    static func dockerBootstrap(wrapping command: [String]) -> [String] {
+        guard !command.isEmpty else { return command }
+        // The stock guest kernel does not expose the nf_tables netlink API, so
+        // the nft-backed iptables shim fails with "Could not fetch rule set
+        // generation id" and dockerd cannot create its NAT chain. The legacy
+        // backend works, so select it when nft is broken rather than requiring
+        // a custom kernel.
+        let script = """
+            if ! iptables -t nat -L >/dev/null 2>&1; then
+              for tool in iptables ip6tables; do
+                if [ -x "/usr/sbin/$tool-legacy" ]; then
+                  ln -sf "/usr/sbin/$tool-legacy" "/usr/sbin/$tool" 2>/dev/null
+                  ln -sf "/usr/sbin/$tool-legacy" "/sbin/$tool" 2>/dev/null
+                fi
+              done
+            fi
+            if command -v dockerd >/dev/null 2>&1; then
+              mkdir -p /var/log
+              dockerd --host=unix:///var/run/docker.sock >/var/log/dockerd.log 2>&1 &
+              for i in $(seq 1 60); do
+                if docker info >/dev/null 2>&1; then break; fi
+                sleep 0.5
+              done
+              if ! docker info >/dev/null 2>&1; then
+                echo "airlock: dockerd did not start; see /var/log/dockerd.log" >&2
+              fi
+            else
+              echo "airlock: --docker given but dockerd is not in this image" >&2
+            fi
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
     }
 
     static let guestCertificateDirectory = "/etc/airlock"

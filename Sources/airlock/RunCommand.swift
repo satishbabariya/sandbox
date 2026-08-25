@@ -58,6 +58,13 @@ struct RunCommand: AsyncParsableCommand {
     @Flag(
         name: .long,
         help: """
+            Run a private dockerd inside the sandbox, on its own disk. Implies             --privileged. Containers it starts sit behind the same egress             policy. The image must already contain dockerd.
+            """)
+    var docker: Bool = false
+
+    @Flag(
+        name: .long,
+        help: """
             Grant every Linux capability inside the sandbox. Does not weaken             egress policy, which is enforced outside the guest.
             """)
     var privileged: Bool = false
@@ -104,8 +111,9 @@ struct RunCommand: AsyncParsableCommand {
             deny: deny,
             cpus: cpus,
             memoryInBytes: try Self.parseMemory(memory),
-            privileged: privileged,
-            secrets: secret
+            privileged: privileged || docker,
+            secrets: secret,
+            docker: docker
         )
         if let workspace {
             launch.workspace = URL(filePath: workspace).standardizedFileURL

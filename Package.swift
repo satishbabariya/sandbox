@@ -12,6 +12,7 @@ let package = Package(
         .package(path: "../containerization"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.10.1"),
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
     ],
     targets: [
         .target(
@@ -22,6 +23,7 @@ let package = Package(
                 .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "SystemPackage", package: "swift-system"),
             ]
         ),
         .executableTarget(
