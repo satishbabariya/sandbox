@@ -41,6 +41,8 @@ public struct SandboxSpec: Sendable {
     /// guest's only network device, so CAP_NET_ADMIN buys the guest control
     /// over an interface that still has nowhere else to go.
     public var privileged: Bool
+    /// Credentials to broker. The guest receives a sentinel, never the secret.
+    public var credentials: [CredentialBinding]
     /// Where the guest's stdout goes. Defaults to the host's stdout.
     public var stdout: (any Writer)?
     /// Where the guest's stderr goes. Defaults to the host's stderr.
@@ -58,6 +60,7 @@ public struct SandboxSpec: Sendable {
         workspaceDestination: String = "/workspace",
         terminal: Bool = false,
         privileged: Bool = false,
+        credentials: [CredentialBinding] = [],
         stdout: (any Writer)? = nil,
         stderr: (any Writer)? = nil
     ) {
@@ -72,6 +75,7 @@ public struct SandboxSpec: Sendable {
         self.workspaceDestination = workspaceDestination
         self.terminal = terminal
         self.privileged = privileged
+        self.credentials = credentials
         self.stdout = stdout ?? StreamWriter.standardOutput
         self.stderr = stderr ?? StreamWriter.standardError
     }
@@ -138,11 +142,19 @@ public actor Sandbox {
 
         let supervisor = NetstackSupervisor(
             binary: gatewayBinary,
-            configuration: .init(policy: spec.policy, runtimeDirectory: socketDir),
+            configuration: .init(
+                policy: spec.policy,
+                runtimeDirectory: socketDir,
+                credentials: spec.credentials
+            ),
             logger: logger
         )
         let link = try await supervisor.start()
         self.netstack = supervisor
+
+        let caCertificate = supervisor.caCertificatePath
+        let caIsPresent = FileManager.default.fileExists(atPath: caCertificate.path)
+        let guestShare = supervisor.guestShareDirectory
 
         // 2. The VM. One interface, no vmnet, no NAT, no host route.
         let interface = try AirlockInterface(link: link, macAddress: "5a:94:ef:e4:0c:de")
@@ -180,6 +192,28 @@ public actor Sandbox {
             if !spec.command.isEmpty {
                 config.process.arguments = spec.command
             }
+
+            if caIsPresent {
+                // Read-only, and only the directory holding the certificate —
+                // the runtime directory beside it holds the real secrets.
+                config.mounts.append(
+                    .share(
+                        source: guestShare.path(percentEncoded: false),
+                        destination: Self.guestCertificateDirectory,
+                        options: ["ro"]
+                    ))
+                config.process.arguments = Self.trustBootstrap(
+                    wrapping: config.process.arguments)
+                for (key, value) in Self.trustEnvironment {
+                    config.process.environmentVariables.append("\(key)=\(value)")
+                }
+                for binding in spec.credentials {
+                    guard let name = CredentialBinding.sentinelEnvironment[binding.service]
+                    else { continue }
+                    config.process.environmentVariables.append(
+                        "\(name)=\(CredentialBinding.sentinel)")
+                }
+            }
             for (key, value) in spec.environment {
                 config.process.environmentVariables.append("\(key)=\(value)")
             }
@@ -199,6 +233,38 @@ public actor Sandbox {
         try await container.create()
         try await container.start()
         logger?.info("sandbox started", metadata: ["id": .string(spec.id)])
+    }
+
+    static let guestCertificateDirectory = "/etc/airlock"
+    static let guestCertificatePath = "/etc/airlock/airlock-ca.crt"
+
+    /// Variables for runtimes that consult their own trust store rather than
+    /// the system bundle. Node in particular ignores the bundle entirely.
+    static let trustEnvironment: [String: String] = [
+        "NODE_EXTRA_CA_CERTS": guestCertificatePath,
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+        "CURL_CA_BUNDLE": "/etc/ssl/certs/ca-certificates.crt",
+        "GIT_SSL_CAINFO": "/etc/ssl/certs/ca-certificates.crt",
+        "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+    ]
+
+    /// Wrap the guest command so the CA is appended to the system bundle before
+    /// it runs.
+    ///
+    /// Appending rather than replacing: pointing the bundle at our CA alone
+    /// would stop every other certificate on the internet from verifying.
+    static func trustBootstrap(wrapping command: [String]) -> [String] {
+        guard !command.isEmpty else { return command }
+        let script = """
+            if [ -f \(guestCertificatePath) ]; then
+              for bundle in /etc/ssl/certs/ca-certificates.crt \
+                            /etc/pki/tls/certs/ca-bundle.crt; do
+                [ -f "$bundle" ] && cat \(guestCertificatePath) >> "$bundle" 2>/dev/null
+              done
+            fi
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
     }
 
     /// The vminit image carrying the guest agent. Pinned so a sandbox is

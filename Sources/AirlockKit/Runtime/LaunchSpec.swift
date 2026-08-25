@@ -18,6 +18,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var workspace: String?
     public var workspaceDestination: String
     public var privileged: Bool
+    /// Services whose credentials the broker should inject.
+    public var secrets: [String]
 
     public init(
         name: String,
@@ -30,7 +32,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         memoryInBytes: UInt64 = 4 * 1024 * 1024 * 1024,
         workspace: String? = nil,
         workspaceDestination: String = "/workspace",
-        privileged: Bool = false
+        privileged: Bool = false,
+        secrets: [String] = []
     ) {
         self.name = name
         self.image = image
@@ -43,6 +46,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.workspace = workspace
         self.workspaceDestination = workspaceDestination
         self.privileged = privileged
+        self.secrets = secrets
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -63,6 +67,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             workspaceDestination: workspaceDestination,
             terminal: terminal,
             privileged: privileged,
+            credentials: bindings,
             stdout: stdout,
             stderr: stderr
         )
@@ -70,6 +75,12 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             spec.workspace = URL(filePath: workspace)
         }
         return spec
+    }
+
+    /// Resolve service names to bindings, ignoring any without a known one —
+    /// storing a secret with no binding should not stop a sandbox starting.
+    public var bindings: [CredentialBinding] {
+        secrets.compactMap { CredentialBinding.preset(for: $0) }
     }
 
     public var record: SandboxRecord {

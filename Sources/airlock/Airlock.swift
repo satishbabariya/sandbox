@@ -10,7 +10,7 @@ struct Airlock: AsyncParsableCommand {
         subcommands: [
             RunCommand.self, ExecCommand.self, ListCommand.self,
             StopCommand.self, RemoveCommand.self, LogsCommand.self,
-            PolicyCommand.self, SuperviseCommand.self,
+            PolicyCommand.self, SecretCommand.self, SuperviseCommand.self,
         ]
     )
 }

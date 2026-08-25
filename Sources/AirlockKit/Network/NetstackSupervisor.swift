@@ -33,6 +33,9 @@ public actor NetstackSupervisor {
         public var gatewayIP: String
         public var gatewayMAC: String
         public var mtu: UInt32
+        /// Credential bindings to resolve and hand the gateway. Empty means no
+        /// interception at all.
+        public var credentials: [CredentialBinding]
 
         public init(
             policy: NetworkPolicy,
@@ -40,7 +43,8 @@ public actor NetstackSupervisor {
             subnet: String = AirlockInterface.Defaults.subnet,
             gatewayIP: String = AirlockInterface.Defaults.gateway,
             gatewayMAC: String = AirlockInterface.Defaults.gatewayMAC,
-            mtu: UInt32 = AirlockInterface.Defaults.mtu
+            mtu: UInt32 = AirlockInterface.Defaults.mtu,
+            credentials: [CredentialBinding] = []
         ) {
             self.policy = policy
             self.runtimeDirectory = runtimeDirectory
@@ -48,6 +52,7 @@ public actor NetstackSupervisor {
             self.gatewayIP = gatewayIP
             self.gatewayMAC = gatewayMAC
             self.mtu = mtu
+            self.credentials = credentials
         }
     }
 
@@ -61,6 +66,27 @@ public actor NetstackSupervisor {
     public nonisolated var auditLogPath: URL {
         config.runtimeDirectory.appending(path: "policy.jsonl")
     }
+
+    /// Resolved secrets for the gateway. Mode 0600, on the host, in a directory
+    /// that is never shared into the VM.
+    public nonisolated var brokerConfigPath: URL {
+        config.runtimeDirectory.appending(path: "credentials.json")
+    }
+
+    /// A directory holding ONLY the CA certificate, so it can be shared into
+    /// the guest without exposing anything else in the runtime directory —
+    /// which is also where the resolved secrets live.
+    public nonisolated var guestShareDirectory: URL {
+        config.runtimeDirectory.appending(path: "guest")
+    }
+
+    /// The CA certificate the guest must trust for interception to verify.
+    public nonisolated var caCertificatePath: URL {
+        guestShareDirectory.appending(path: "airlock-ca.crt")
+    }
+
+    /// Services named by a binding that had no secret stored.
+    public private(set) var missingSecrets: [String] = []
 
     public init(binary: URL, configuration: Configuration, logger: Logger? = nil) {
         self.binary = binary
@@ -89,6 +115,7 @@ public actor NetstackSupervisor {
         let configFile = config.runtimeDirectory.appending(path: "gateway.yaml")
         try? FileManager.default.removeItem(at: gatewaySocket)
 
+        try writeBrokerConfiguration()
         try renderConfiguration().write(to: configFile, atomically: true, encoding: .utf8)
 
         let proc = Process()
@@ -129,6 +156,25 @@ public actor NetstackSupervisor {
         return data.split(separator: UInt8(ascii: "\n")).compactMap { line in
             try? decoder.decode(PolicyAuditRecord.self, from: Data(line))
         }
+    }
+
+    /// Resolve bindings against the keychain and write them where only this
+    /// user, and the gateway running as this user, can read them.
+    private func writeBrokerConfiguration() throws {
+        guard !config.credentials.isEmpty else { return }
+        let (resolved, missing) = BrokerConfiguration.resolve(bindings: config.credentials)
+        self.missingSecrets = missing
+        guard !resolved.credentials.isEmpty else { return }
+
+        // The CA lands in its own directory; the secrets stay in the parent,
+        // which is never shared into the VM.
+        try FileManager.default.createDirectory(
+            at: guestShareDirectory, withIntermediateDirectories: true)
+
+        let data = try JSONEncoder().encode(resolved)
+        try data.write(to: brokerConfigPath, options: .atomic)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: brokerConfigPath.path)
     }
 
     private func openLog() throws -> FileHandle {
@@ -172,6 +218,17 @@ public actor NetstackSupervisor {
                 allow:\(list(config.policy.allow))
                 deny:\(list(config.policy.deny))
                 auditLog: "\(auditLogPath.path)"
+            \(brokerLines)
+            """
+    }
+
+    /// Only emitted when a credential actually resolved, so a sandbox with no
+    /// secrets is never intercepted.
+    private var brokerLines: String {
+        guard FileManager.default.fileExists(atPath: brokerConfigPath.path) else { return "" }
+        return """
+                brokerConfig: "\(brokerConfigPath.path)"
+                brokerCACert: "\(caCertificatePath.path)"
             """
     }
 }

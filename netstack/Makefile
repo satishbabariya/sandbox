@@ -47,7 +47,7 @@ $(BIN): $(WORK)/.patched check-vectors
 
 .PHONY: test
 test: $(WORK)/.patched check-vectors
-	@cd $(WORK) && GOFLAGS=-mod=vendor go test ./pkg/policy/ ./pkg/services/dns/ ./pkg/services/forwarder/
+	@cd $(WORK) && GOFLAGS=-mod=vendor go test ./pkg/policy/ ./pkg/broker/ ./pkg/services/dns/ ./pkg/services/forwarder/
 
 .PHONY: clean
 clean:

@@ -48,6 +48,13 @@ struct RunCommand: AsyncParsableCommand {
         help: "Leave the sandbox running in the background and print its name.")
     var detach: Bool = false
 
+    @Option(
+        name: .long,
+        help: """
+            Inject a stored secret for this service; repeatable. The guest             receives a sentinel, never the value.
+            """)
+    var secret: [String] = []
+
     @Flag(
         name: .long,
         help: """
@@ -71,7 +78,20 @@ struct RunCommand: AsyncParsableCommand {
                 "sandbox '\(id)' is already running; use airlock exec \(id) -- <cmd>")
         }
 
-        if policy.allow.isEmpty {
+        // A credential is useless if policy forbids reaching its domain, and
+        // silently doing nothing would be baffling. Widen for bound domains.
+        var launchAllow = allow
+        for service in secret {
+            guard let binding = CredentialBinding.preset(for: service) else {
+                throw ValidationError(
+                    "no built-in binding for secret '\(service)'")
+            }
+            if !launchAllow.contains(binding.domain) {
+                launchAllow.append(binding.domain)
+            }
+        }
+
+        if policy.allow.isEmpty && secret.isEmpty {
             FileHandle.standardError.write(
                 Data("airlock: no --allow rules; this sandbox reaches nothing\n".utf8))
         }
@@ -80,11 +100,12 @@ struct RunCommand: AsyncParsableCommand {
             name: id,
             image: image,
             command: command,
-            allow: allow,
+            allow: launchAllow,
             deny: deny,
             cpus: cpus,
             memoryInBytes: try Self.parseMemory(memory),
-            privileged: privileged
+            privileged: privileged,
+            secrets: secret
         )
         if let workspace {
             launch.workspace = URL(filePath: workspace).standardizedFileURL
