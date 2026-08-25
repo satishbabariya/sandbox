@@ -213,6 +213,13 @@ struct RunCommand: AsyncParsableCommand {
             spec.environment["TERM"] =
                 ProcessInfo.processInfo.environment["TERM"]
                 ?? "xterm-256color"
+            // The PTY resize is a separate call that lands just after the
+            // process starts, so seed the size in the environment as well for
+            // anything that reads it immediately.
+            if let size = try? hostTerminal?.size {
+                spec.environment["COLUMNS"] = String(size.width)
+                spec.environment["LINES"] = String(size.height)
+            }
         }
         let sandbox = Sandbox(spec: spec, paths: paths)
 

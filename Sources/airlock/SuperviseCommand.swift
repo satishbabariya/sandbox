@@ -1,6 +1,7 @@
 import AirlockKit
 import ArgumentParser
 import Containerization
+import ContainerizationOS
 import Darwin
 import Foundation
 
@@ -83,6 +84,57 @@ struct SuperviseCommand: AsyncParsableCommand {
                         )), to: client)
             case .policyLog:
                 ControlServer.send(.policyLog(await sandbox.auditRecords()), to: client)
+            case .execTTY(let command, let environment, let workingDirectory, let rows, let columns):
+                do {
+                    let input = PipedInput()
+                    let output = ClientWriter(fd: client, stream: .stdout)
+                    let process = try await sandbox.execInteractive(
+                        command,
+                        environment: environment,
+                        workingDirectory: workingDirectory,
+                        input: input,
+                        output: output,
+                        size: Terminal.Size(width: columns, height: rows)
+                    )
+                    ControlServer.send(.started(pid: 0), to: client)
+
+                    // Keep reading the same connection for keystrokes and
+                    // window changes while the process runs.
+                    let pump = Task.detached {
+                        var reader = LineReader(fd: client)
+                        while let line = reader.next() {
+                            guard
+                                let request = try? ControlCodec.decode(
+                                    ControlRequest.self, from: line)
+                            else { continue }
+                            switch request {
+                            case .input(let base64):
+                                if let data = Data(base64Encoded: base64) {
+                                    input.send(data)
+                                }
+                            case .resize(let rows, let columns):
+                                try? await process.resize(
+                                    to: Terminal.Size(width: columns, height: rows))
+                            case .closeInput:
+                                input.finish()
+                            default:
+                                break
+                            }
+                        }
+                        input.finish()
+                    }
+
+                    let status = try await process.wait()
+                    pump.cancel()
+                    try? await process.delete()
+                    ControlServer.send(.exited(status: status.exitCode), to: client)
+                } catch {
+                    ControlServer.send(.failure("\(error)"), to: client)
+                }
+            case .input, .resize, .closeInput:
+                // Only meaningful inside an interactive exec, where the pump
+                // above consumes them.
+                break
             case .copyIn(let hostPath, let guestPath):
                 do {
                     try await sandbox.copyIn(

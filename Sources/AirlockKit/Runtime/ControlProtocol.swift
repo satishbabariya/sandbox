@@ -9,6 +9,16 @@ import Foundation
 public enum ControlRequest: Codable, Sendable, Equatable {
     /// Run a command inside the running sandbox.
     case exec(command: [String], environment: [String: String], workingDirectory: String?)
+    /// Run a command with a PTY attached, so an interactive shell works.
+    case execTTY(
+        command: [String], environment: [String: String], workingDirectory: String?,
+        rows: UInt16, columns: UInt16)
+    /// A chunk of the caller's stdin, base64 encoded, for an interactive exec.
+    case input(base64: String)
+    /// The caller's terminal changed size.
+    case resize(rows: UInt16, columns: UInt16)
+    /// The caller closed stdin.
+    case closeInput
     /// Report what the supervisor is holding.
     case info
     /// Shut the sandbox down.

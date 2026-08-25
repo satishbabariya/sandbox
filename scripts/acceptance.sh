@@ -83,48 +83,15 @@ echo "== interactive terminal =="
 # A full-screen agent cannot render or receive keystrokes without a PTY, so
 # this is load-bearing for the tool being usable at all. Needs a real
 # terminal, which the test harness allocates.
-out=$(python3 - "$B" "$CLONE_IMAGE" <<'PYEOF'
-import fcntl, os, pty, select, struct, sys, termios, time
-
-binary, image = sys.argv[1], sys.argv[2]
-cmd = [binary, "run", image, "--", "/bin/sh", "-c",
-       "test -t 0 && echo STDIN_IS_TTY; test -t 1 && echo STDOUT_IS_TTY; stty size"]
-
-pid, fd = pty.fork()
-if pid == 0:
-    os.execv(cmd[0], cmd)
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-
-out, deadline, done = b"", time.time() + 240, False
-while time.time() < deadline and not done:
-    ready, _, _ = select.select([fd], [], [], 1.0)
-    if ready:
-        try:
-            chunk = os.read(fd, 4096)
-        except OSError:
-            break
-        if not chunk:
-            break
-        out += chunk
-    if os.waitpid(pid, os.WNOHANG)[0] != 0:
-        for _ in range(5):
-            ready, _, _ = select.select([fd], [], [], 0.4)
-            if not ready:
-                break
-            try:
-                more = os.read(fd, 4096)
-            except OSError:
-                break
-            if not more:
-                break
-            out += more
-        done = True
-print(out.decode(errors="replace"))
-PYEOF
-)
+out=$(scripts/pty-probe.py 40 120 240 "$B" run "$CLONE_IMAGE" -- \
+  /bin/sh -c 'test -t 0 && echo STDIN_IS_TTY
+              test -t 1 && echo STDOUT_IS_TTY
+              stty size
+              echo "env $COLUMNS $LINES"' 2>&1)
 check "guest stdin is a terminal" "STDIN_IS_TTY" "$out"
 check "guest stdout is a terminal" "STDOUT_IS_TTY" "$out"
 check "window size reaches the guest" "40 120" "$out"
+check "size is in the environment from the start" "env 120 40" "$out"
 
 echo "== clone mode =="
 

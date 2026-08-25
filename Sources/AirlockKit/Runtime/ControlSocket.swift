@@ -1,5 +1,7 @@
+import ContainerizationOS
 import Darwin
 import Foundation
+import Synchronization
 
 public enum ControlSocketError: Error, CustomStringConvertible {
     case failed(String, errno: Int32)
@@ -163,6 +165,81 @@ public struct ControlClient: Sendable {
         }
     }
 
+    /// Send an interactive request, then pump the caller's stdin and window
+    /// size onto the same connection while streaming responses back.
+    ///
+    /// Input runs on a background thread because reading stdin blocks, and the
+    /// response loop must keep draining output the whole time — otherwise a
+    /// program that prints while waiting for input would deadlock.
+    public func sendInteractive(
+        _ request: ControlRequest,
+        terminal: Terminal,
+        onResponse: (ControlResponse) -> Bool
+    ) throws {
+        let sock = try connect()
+        defer { close(sock) }
+
+        let payload = try ControlCodec.encode(request)
+        _ = payload.withUnsafeBytes { write(sock, $0.baseAddress, $0.count) }
+
+        let running = Mutex(true)
+
+        // Poll rather than block on read: when the remote process exits there
+        // is nothing to unblock a plain read(), and the thread would keep the
+        // whole command alive after the session is over.
+        let inputThread = Thread {
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while running.withLock({ $0 }) {
+                var readable = fd_set()
+                fdZero(&readable)
+                fdSet(STDIN_FILENO, &readable)
+                var timeout = timeval(tv_sec: 0, tv_usec: 200_000)
+                let ready = select(STDIN_FILENO + 1, &readable, nil, nil, &timeout)
+                if ready <= 0 { continue }
+
+                let count = read(STDIN_FILENO, &buffer, buffer.count)
+                guard count > 0 else { break }
+                let chunk = Data(buffer[0..<count])
+                guard
+                    let frame = try? ControlCodec.encode(
+                        ControlRequest.input(base64: chunk.base64EncodedString()))
+                else { continue }
+                _ = frame.withUnsafeBytes { write(sock, $0.baseAddress, $0.count) }
+            }
+            if running.withLock({ $0 }),
+                let frame = try? ControlCodec.encode(ControlRequest.closeInput)
+            {
+                _ = frame.withUnsafeBytes { write(sock, $0.baseAddress, $0.count) }
+            }
+        }
+        inputThread.start()
+
+        let resizeSource = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .global())
+        resizeSource.setEventHandler {
+            guard let size = try? terminal.size else { return }
+            guard
+                let frame = try? ControlCodec.encode(
+                    ControlRequest.resize(
+                        rows: UInt16(size.height), columns: UInt16(size.width)))
+            else { return }
+            _ = frame.withUnsafeBytes { write(sock, $0.baseAddress, $0.count) }
+        }
+        signal(SIGWINCH, SIG_IGN)
+        resizeSource.resume()
+        defer { resizeSource.cancel() }
+
+        var reader = LineReader(fd: sock)
+        while let line = reader.next() {
+            guard let response = try? ControlCodec.decode(ControlResponse.self, from: line)
+            else { continue }
+            if !onResponse(response) { break }
+        }
+        running.withLock { $0 = false }
+        // Let the poll loop observe the flag and finish, so the thread is not
+        // still running as the process tears down.
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+
     /// Convenience for requests with exactly one reply.
     public func request(_ request: ControlRequest) throws -> ControlResponse? {
         var result: ControlResponse?
@@ -171,5 +248,23 @@ public struct ControlClient: Sendable {
             return false
         }
         return result
+    }
+}
+
+/// `FD_ZERO` and `FD_SET` are C macros, so they are unavailable from Swift.
+/// `fd_set` is a fixed array of 32-bit words; these set the bit by hand.
+private func fdZero(_ set: inout fd_set) {
+    withUnsafeMutableBytes(of: &set.fds_bits) { raw in
+        raw.initializeMemory(as: UInt8.self, repeating: 0)
+    }
+}
+
+private func fdSet(_ fd: Int32, _ set: inout fd_set) {
+    let index = Int(fd) / 32
+    let bit = Int32(1) << (Int32(fd) % 32)
+    withUnsafeMutableBytes(of: &set.fds_bits) { raw in
+        let words = raw.bindMemory(to: Int32.self)
+        guard index < words.count else { return }
+        words[index] |= bit
     }
 }

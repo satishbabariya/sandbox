@@ -552,6 +552,45 @@ public actor Sandbox {
         try await container.copyOut(from: URL(filePath: source), to: destination)
     }
 
+    /// Run a process with a PTY attached, for an interactive exec.
+    ///
+    /// Returns the process so the caller can feed it input and resize it.
+    public func execInteractive(
+        _ command: [String],
+        environment: [String: String] = [:],
+        workingDirectory: String? = nil,
+        input: PipedInput,
+        output: any Writer,
+        size: Terminal.Size
+    ) async throws -> LinuxProcess {
+        guard let container else { throw SandboxError.notRunning }
+        var config = LinuxProcessConfiguration()
+        config.arguments = command
+        config.terminal = true
+        config.stdin = input
+        config.stdout = output
+        // stderr stays nil: the PTY already carries it.
+        config.workingDirectory = workingDirectory ?? spec.workspaceDestination
+        config.environmentVariables.append(
+            "TERM=\(environment["TERM"] ?? "xterm-256color")")
+        // resize() is a separate RPC that lands shortly after the process
+        // starts, so a program that reads its size immediately would see 0x0.
+        // COLUMNS and LINES are set from the start for exactly that window.
+        config.environmentVariables.append("COLUMNS=\(size.width)")
+        config.environmentVariables.append("LINES=\(size.height)")
+        for (key, value) in environment where key != "TERM" {
+            config.environmentVariables.append("\(key)=\(value)")
+        }
+        if spec.privileged {
+            config.capabilities = .allCapabilities
+        }
+        let process = try await container.exec(
+            "exec-\(UInt32.random(in: 0..<0xFFFF_FFFF))", configuration: config)
+        try await process.start()
+        try? await process.resize(to: size)
+        return process
+    }
+
     /// Tell the guest its terminal changed size.
     public func resize(to size: Terminal.Size) async throws {
         guard let container else { throw SandboxError.notRunning }

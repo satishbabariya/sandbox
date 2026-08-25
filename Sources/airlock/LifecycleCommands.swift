@@ -1,5 +1,7 @@
 import AirlockKit
 import ArgumentParser
+import Containerization
+import ContainerizationOS
 import Darwin
 import Foundation
 
@@ -25,6 +27,12 @@ struct ExecCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Working directory inside the sandbox.")
     var workdir: String?
 
+    @Flag(
+        name: [.customShort("t"), .long],
+        inversion: .prefixedNo,
+        help: "Attach a terminal. Defaults to on when stdin is a terminal.")
+    var tty: Bool = true
+
     func run() async throws {
         guard !command.isEmpty else {
             throw ValidationError("no command given; use: airlock exec \(name) -- <cmd>")
@@ -47,6 +55,15 @@ struct ExecCommand: AsyncParsableCommand {
         }
 
         let client = ControlClient(path: ControlClient.path(for: name, paths: paths))
+
+        let interactive = tty && isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
+        if interactive, let terminal = try? Terminal.current {
+            try Self.runInteractive(
+                client: client, terminal: terminal, command: command,
+                environment: environment, workdir: workdir)
+            return
+        }
+
         var exitStatus: Int32 = 0
         var failure: String?
 
@@ -70,6 +87,53 @@ struct ExecCommand: AsyncParsableCommand {
             }
         }
 
+        if let failure {
+            throw CleanExit.message("exec failed: \(failure)")
+        }
+        if exitStatus != 0 { throw ExitCode(exitStatus) }
+    }
+
+    /// Interactive exec: forward keystrokes and window changes on the same
+    /// connection that carries the process output back.
+    static func runInteractive(
+        client: ControlClient, terminal: Terminal, command: [String],
+        environment: [String: String], workdir: String?
+    ) throws {
+        var environment = environment
+        environment["TERM"] =
+            environment["TERM"] ?? ProcessInfo.processInfo.environment["TERM"]
+            ?? "xterm-256color"
+
+        let size = try terminal.size
+        try terminal.setraw()
+        defer { terminal.tryReset() }
+
+        var exitStatus: Int32 = 0
+        var failure: String?
+
+        try client.sendInteractive(
+            .execTTY(
+                command: command, environment: environment, workingDirectory: workdir,
+                rows: UInt16(size.height), columns: UInt16(size.width)),
+            terminal: terminal
+        ) { response in
+            switch response {
+            case .output(_, let base64):
+                guard let data = Data(base64Encoded: base64) else { return true }
+                try? FileHandle.standardOutput.write(contentsOf: data)
+                return true
+            case .exited(let status):
+                exitStatus = status
+                return false
+            case .failure(let message):
+                failure = message
+                return false
+            default:
+                return true
+            }
+        }
+
+        terminal.tryReset()
         if let failure {
             throw CleanExit.message("exec failed: \(failure)")
         }
