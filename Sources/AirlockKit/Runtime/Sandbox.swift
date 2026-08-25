@@ -214,6 +214,12 @@ public actor Sandbox {
         let contentStore = try LocalContentStore(path: paths.images.appending(path: "content"))
         let imageStore = try ImageStore(path: paths.images, contentStore: contentStore)
 
+        // ContainerManager reuses an existing initfs.ext4 whatever reference it
+        // is asked for, so bumping the vminit version would otherwise keep
+        // booting the old guest agent. Track what produced the cached one and
+        // discard it when the pin moves.
+        try Self.invalidateStaleInitfs(in: paths.images)
+
         var mgr = try await ContainerManager(
             kernel: kernel,
             initfsReference: Self.initfsReference,
@@ -421,7 +427,22 @@ public actor Sandbox {
 
     /// The vminit image carrying the guest agent. Pinned so a sandbox is
     /// reproducible rather than tracking whatever :latest happens to be.
-    public static let initfsReference = "ghcr.io/apple/containerization/vminit:0.30.0"
+    public static let initfsReference = "ghcr.io/apple/containerization/vminit:0.41.0"
+
+    /// Remove a cached initfs built from a different vminit reference.
+    static func invalidateStaleInitfs(in imagesDirectory: URL) throws {
+        let initfs = imagesDirectory.appending(path: "initfs.ext4")
+        let marker = imagesDirectory.appending(path: "initfs.reference")
+
+        let recorded = try? String(contentsOf: marker, encoding: .utf8)
+        if recorded?.trimmingCharacters(in: .whitespacesAndNewlines) == initfsReference {
+            return
+        }
+        try? FileManager.default.removeItem(at: initfs)
+        try FileManager.default.createDirectory(
+            at: imagesDirectory, withIntermediateDirectories: true)
+        try initfsReference.write(to: marker, atomically: true, encoding: .utf8)
+    }
 
     /// Run an additional process inside the already-running sandbox.
     ///
@@ -453,6 +474,18 @@ public actor Sandbox {
         let process = try await container.exec(id, configuration: config)
         try await process.start()
         return process
+    }
+
+    /// Copy a host path into the running sandbox.
+    public func copyIn(from source: URL, to destination: String) async throws {
+        guard let container else { throw SandboxError.notRunning }
+        try await container.copyIn(from: source, to: URL(filePath: destination))
+    }
+
+    /// Copy a path out of the running sandbox.
+    public func copyOut(from source: String, to destination: URL) async throws {
+        guard let container else { throw SandboxError.notRunning }
+        try await container.copyOut(from: URL(filePath: source), to: destination)
     }
 
     public func wait() async throws -> Int32 {

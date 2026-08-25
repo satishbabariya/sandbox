@@ -15,6 +15,11 @@ public enum ControlRequest: Codable, Sendable, Equatable {
     case stop
     /// Read back policy decisions recorded so far.
     case policyLog
+    /// Copy a host path into the sandbox. Both paths are resolved by the
+    /// supervisor, which runs on the host, so no file bytes cross this socket.
+    case copyIn(hostPath: String, guestPath: String)
+    /// Copy a sandbox path out to the host.
+    case copyOut(guestPath: String, hostPath: String)
 }
 
 public enum ControlResponse: Codable, Sendable, Equatable {
@@ -26,6 +31,7 @@ public enum ControlResponse: Codable, Sendable, Equatable {
     case info(SandboxInfo)
     case policyLog([PolicyAuditRecord])
     case failure(String)
+    case copied
 }
 
 public enum OutputStream: String, Codable, Sendable, Equatable {

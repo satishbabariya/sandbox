@@ -83,6 +83,22 @@ struct SuperviseCommand: AsyncParsableCommand {
                         )), to: client)
             case .policyLog:
                 ControlServer.send(.policyLog(await sandbox.auditRecords()), to: client)
+            case .copyIn(let hostPath, let guestPath):
+                do {
+                    try await sandbox.copyIn(
+                        from: URL(filePath: hostPath), to: guestPath)
+                    ControlServer.send(.copied, to: client)
+                } catch {
+                    ControlServer.send(.failure("\(error)"), to: client)
+                }
+            case .copyOut(let guestPath, let hostPath):
+                do {
+                    try await sandbox.copyOut(
+                        from: guestPath, to: URL(filePath: hostPath))
+                    ControlServer.send(.copied, to: client)
+                } catch {
+                    ControlServer.send(.failure("\(error)"), to: client)
+                }
             case .stop:
                 ControlServer.send(.exited(status: 0), to: client)
                 await shutdown.signal()
