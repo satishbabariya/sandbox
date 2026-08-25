@@ -55,10 +55,12 @@ struct KernelInstall: AsyncParsableCommand {
             return
         }
 
-        let url = URL(
-            string:
-                "https://github.com/kata-containers/kata-containers/releases/download/"
-                + "\(Self.kataVersion)/kata-static-\(Self.kataVersion)-arm64.tar.xz")!
+        let address =
+            "https://github.com/kata-containers/kata-containers/releases/download/"
+            + "\(Self.kataVersion)/kata-static-\(Self.kataVersion)-arm64.tar.xz"
+        guard let url = URL(string: address) else {
+            throw CleanExit.message("could not build the download URL: \(address)")
+        }
 
         let scratch = paths.root.appending(path: "download")
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
