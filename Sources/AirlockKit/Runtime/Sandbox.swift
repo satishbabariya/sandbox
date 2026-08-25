@@ -33,6 +33,14 @@ public struct SandboxSpec: Sendable {
     public var workspace: URL?
     public var workspaceDestination: String
     public var terminal: Bool
+    /// Grant the guest process every Linux capability.
+    ///
+    /// Needed by workloads that manage their own namespaces and networking,
+    /// such as a dockerd running inside the sandbox. It deliberately does NOT
+    /// weaken egress policy: the enforcement point is the host end of the
+    /// guest's only network device, so CAP_NET_ADMIN buys the guest control
+    /// over an interface that still has nowhere else to go.
+    public var privileged: Bool
     /// Where the guest's stdout goes. Defaults to the host's stdout.
     public var stdout: (any Writer)?
     /// Where the guest's stderr goes. Defaults to the host's stderr.
@@ -49,6 +57,7 @@ public struct SandboxSpec: Sendable {
         workspace: URL? = nil,
         workspaceDestination: String = "/workspace",
         terminal: Bool = false,
+        privileged: Bool = false,
         stdout: (any Writer)? = nil,
         stderr: (any Writer)? = nil
     ) {
@@ -62,6 +71,7 @@ public struct SandboxSpec: Sendable {
         self.workspace = workspace
         self.workspaceDestination = workspaceDestination
         self.terminal = terminal
+        self.privileged = privileged
         self.stdout = stdout ?? StreamWriter.standardOutput
         self.stderr = stderr ?? StreamWriter.standardError
     }
@@ -161,6 +171,9 @@ public actor Sandbox {
             // what lets policy gate name resolution as well as dialling.
             config.dns = DNS(nameservers: [AirlockInterface.Defaults.gateway])
             config.process.terminal = spec.terminal
+            if spec.privileged {
+                config.process.capabilities = .allCapabilities
+            }
             config.process.stdout = spec.stdout
             config.process.stderr = spec.stderr
 

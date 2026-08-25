@@ -43,6 +43,13 @@ struct RunCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Print every policy decision when the sandbox exits.")
     var showPolicyLog: Bool = false
 
+    @Flag(
+        name: .long,
+        help: """
+            Grant every Linux capability inside the sandbox. Does not weaken             egress policy, which is enforced outside the guest.
+            """)
+    var privileged: Bool = false
+
     func run() async throws {
         let policy = try NetworkPolicy(allow: allow, deny: deny)
         let id = name ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
@@ -58,7 +65,8 @@ struct RunCommand: AsyncParsableCommand {
             command: command,
             policy: policy,
             cpus: cpus,
-            memoryInBytes: try Self.parseMemory(memory)
+            memoryInBytes: try Self.parseMemory(memory),
+            privileged: privileged
         )
         if let workspace {
             spec.workspace = URL(filePath: workspace).standardizedFileURL
