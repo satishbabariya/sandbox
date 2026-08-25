@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      # The version baked into the binary must match the tag, or `airlock
+      # --version` lies about what a user is running.
+      - name: Stamp version
+        run: |
+          V="${{ steps.version.outputs.value }}"
+          sed -i '' "s|public static let current = \".*\"|public static let current = \"${V#v}\"|" \
+            Sources/AirlockKit/Version.swift
+          grep current Sources/AirlockKit/Version.swift
+
+      - name: Build release
+        run: make build CONFIG=release
+
+      - name: Verify the entitlement survived
+        run: |
+          codesign -d --entitlements - .build/release/airlock 2>&1 \
+            | grep -q virtualization \
+            || { echo "release binary lost its entitlement; it cannot start a VM"; exit 1; }
+
+      - name: Test
+        run: |
+          swift test
+          make -C netstack test
+
+      - name: Package
+        run: |
+          V="${{ steps.version.outputs.value }}"
+          STAGE="airlock-${V}-darwin-arm64"
+          mkdir -p "dist/$STAGE/bin"
+          cp .build/release/airlock "dist/$STAGE/bin/"
+          cp .build/bin/gvairlock "dist/$STAGE/bin/"
+          cp README.md LICENSE SECURITY.md "dist/$STAGE/"
+          cd dist
+          tar -czf "$STAGE.tar.gz" "$STAGE"
+          shasum -a 256 "$STAGE.tar.gz" | tee "$STAGE.tar.gz.sha256"
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          body: |
+            ## Install
+
+            ```console
+            $ tar -xzf airlock-${{ steps.version.outputs.value }}-darwin-arm64.tar.gz
+            $ sudo cp airlock-*/bin/* /usr/local/bin/
+            $ airlock doctor
+            ```
+
+            Requires Apple silicon and macOS 26.
+
+            The binary is signed ad-hoc with `com.apple.security.virtualization`.
+            macOS may quarantine it on first download; clear that with
+            `xattr -d com.apple.quarantine /usr/local/bin/airlock`.
+
+            Run `airlock doctor` before anything else — it checks the
+            entitlement, the guest kernel, and the gateway in one go.
