@@ -7,7 +7,7 @@ cannot bypass — even as root inside the sandbox.
 > against live VMs, not asserted. See [Status](#status).
 
 ```console
-$ airlock run alpine:3.20 --allow '*.anthropic.com' -- /bin/sh
+$ airlock run claude          # Claude Code, sandboxed, in the current directory
 ```
 
 ## Why
@@ -105,16 +105,49 @@ Being wrong about this is worse than not shipping it.
 
 ## Install
 
-Requires Apple silicon, macOS 26, Xcode 26, and Go 1.21+ to build the gateway.
+Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.21+.
 
 ```console
-$ make build          # builds the CLI and gateway, signs with the entitlement
-$ make install-kernel # fetches a guest kernel into ~/.airlock
+$ brew install satishbabariya/tap/airlock   # or: make build
+$ airlock kernel install                    # guest kernel, ~280 MiB download
+$ airlock doctor                            # check everything at once
 ```
 
 The CLI **must** be codesigned with `com.apple.security.virtualization` or
 Virtualization refuses to start the VM. `make build` always signs; a bare
-`swift build` produces a binary that fails at VM start with an opaque error.
+`swift build` produces a binary that fails at VM start with an opaque error —
+`airlock doctor` catches exactly that.
+
+## Agents
+
+`airlock run claude` works without you knowing which image, egress rules, or
+credential it needs — the agent profile carries all three, and mounts the
+current directory as the workspace.
+
+```console
+$ airlock agents ls
+NAME      AGENT             IMAGE                                    READY  SOURCE
+claude    Claude Code       docker.io/library/node:22-bookworm-slim  yes    built-in
+codex     OpenAI Codex CLI  docker.io/library/node:22-bookworm-slim  no     built-in
+gemini    Gemini CLI        docker.io/library/node:22-bookworm-slim  no     built-in
+opencode  OpenCode          docker.io/library/node:22-bookworm-slim  no     built-in
+shell     Plain shell       docker.io/library/debian:bookworm-slim   yes    built-in
+```
+
+Installing a toolchain takes minutes, so it happens once. The first launch
+builds the environment in a throwaway sandbox constrained to that agent's own
+egress; later launches clone it copy-on-write. On APFS that is effectively
+free — **40s to build, 0.5s to start thereafter**.
+
+`--allow` on the command line *adds* to a profile's rules. A profile is a
+floor, never a ceiling.
+
+Override a built-in or add your own:
+
+```console
+$ airlock agents edit claude   # writes ~/.airlock/agents/claude.json
+$ airlock agents cache         # what is built, and how much disk it uses
+```
 
 ## Credentials the sandbox never holds
 
@@ -174,6 +207,28 @@ $ airlock policy check evilexample.com --allow '*.example.com'
 deny   evilexample.com  (no allow rule matched)
 ```
 
+## Long-lived sandboxes
+
+```console
+$ airlock run claude --name feature-x -d      # detach, print the name
+$ airlock exec feature-x -- git status        # same VM, same policy
+$ airlock cp ./patch.diff feature-x:/workspace/
+$ airlock ls / logs / stop / rm / prune
+```
+
+Each detached sandbox is held by its own supervisor process with its own
+gateway — no daemon to manage, and no shared component between sandboxes.
+
+## Reaching a server the agent started
+
+```console
+$ airlock run claude -p 3000:3000 --name web -d
+$ curl http://127.0.0.1:3000
+```
+
+Binds loopback unless you ask otherwise. Publishing opens a way *in*; it does
+not widen egress.
+
 ## Policy grammar
 
 An exact host (`api.anthropic.com`), a host with a port
@@ -200,14 +255,16 @@ disagreed with the enforcement point would be worse than no CLI.
 
 ## Status
 
-**Working:** enforced egress (DNS gate + dial gate), policy audit log, named
-persistent sandboxes with `run --detach` / `exec` / `ls` / `stop` / `rm` /
-`logs`, credential brokering via the Keychain, a private dockerd per sandbox,
-workspace mounts, `--privileged`.
+**Working:** agent profiles with cached environments, enforced egress (DNS gate
++ dial gate), policy audit log, named persistent sandboxes (`run --detach`,
+`exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
+brokering via the Keychain, a private dockerd per sandbox, workspace and
+arbitrary mounts, `--privileged`, `doctor`, `kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
-interception), dynamic filesystem approval (`VZHotplugProvider`), kit-format
-compatibility, an MCP gateway, OAuth credential flows, x86 emulation.
+interception), dynamic filesystem approval (`VZHotplugProvider`), a private git
+clone mode, kit-format compatibility, an MCP gateway, OAuth credential flows,
+x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation
