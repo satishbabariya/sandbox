@@ -46,6 +46,11 @@ struct RunCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Rebuild the agent's cached environment before running.")
     var rebuild: Bool = false
 
+    @Flag(
+        name: .long,
+        help: "Work on a private git clone of the workspace instead of your tree.")
+    var clone: Bool = false
+
     @Option(
         name: [.customShort("p"), .long],
         help: "Publish a sandbox port to the host: [[HOST:]HOSTPORT:]GUESTPORT; repeatable.")
@@ -167,7 +172,8 @@ struct RunCommand: AsyncParsableCommand {
             mounts: effectiveMounts,
             preparedRootfs: preparedRootfs,
             agent: profile?.name,
-            ports: publish
+            ports: publish,
+            clone: clone
         )
         launch.environment = profile?.environment ?? [:]
         // An agent with no explicit workspace should see the directory the

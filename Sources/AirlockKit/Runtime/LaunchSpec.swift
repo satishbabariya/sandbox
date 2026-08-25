@@ -30,6 +30,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var agent: String?
     /// Published ports, as [[HOST:]HOSTPORT:]GUESTPORT.
     public var ports: [String]
+    /// Give the agent a private git clone rather than the working tree.
+    public var clone: Bool
 
     public init(
         name: String,
@@ -48,7 +50,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         mounts: [String] = [],
         preparedRootfs: String? = nil,
         agent: String? = nil,
-        ports: [String] = []
+        ports: [String] = [],
+        clone: Bool = false
     ) {
         self.name = name
         self.image = image
@@ -67,6 +70,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.preparedRootfs = preparedRootfs
         self.agent = agent
         self.ports = ports
+        self.clone = clone
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -86,6 +90,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             memoryInBytes: memoryInBytes,
             workspaceDestination: workspaceDestination,
             mounts: mounts.compactMap(MountSpec.parse),
+            cloneWorkspace: clone,
             preparedRootfs: preparedRootfs.map { URL(filePath: $0) },
             terminal: terminal,
             privileged: privileged,

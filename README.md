@@ -78,6 +78,7 @@ Against live VMs on `alpine:3.20`:
 | `exec` into a running sandbox | same policy applies |
 | **container started by dockerd inside the sandbox** | same policy applies |
 | `--secret anthropic` | guest sees `airlock-managed`; real value absent from the guest |
+| `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -219,6 +220,16 @@ $ airlock ls / logs / stop / rm / prune
 Each detached sandbox is held by its own supervisor process with its own
 gateway — no daemon to manage, and no shared component between sandboxes.
 
+## Protecting your working tree
+
+```console
+$ airlock run claude --clone
+```
+
+The agent gets a real git clone it can commit to, made from a read-only share
+of your repository. It can `rm -rf` the lot and your tree is untouched — pull
+the work back with `git fetch` when you are happy with it.
+
 ## Reaching a server the agent started
 
 ```console
@@ -259,11 +270,11 @@ disagreed with the enforcement point would be worse than no CLI.
 + dial gate), policy audit log, named persistent sandboxes (`run --detach`,
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
-arbitrary mounts, `--privileged`, `doctor`, `kernel install`.
+arbitrary mounts, `--clone`, `--privileged`, `doctor`, `kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
-interception), dynamic filesystem approval (`VZHotplugProvider`), a private git
-clone mode, kit-format compatibility, an MCP gateway, OAuth credential flows,
+interception), dynamic filesystem approval (`VZHotplugProvider`),
+kit-format compatibility, an MCP gateway, OAuth credential flows,
 x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes

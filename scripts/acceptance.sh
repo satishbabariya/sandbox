@@ -11,6 +11,7 @@ cd "$(dirname "$0")/.."
 
 B="${AIRLOCK_BIN:-.build/debug/airlock}"
 IMAGE="${AIRLOCK_TEST_IMAGE:-docker.io/library/alpine:3.20}"
+CLONE_IMAGE="${AIRLOCK_CLONE_IMAGE:-shell}"
 PASS=0
 FAIL=0
 
@@ -76,6 +77,25 @@ out=$($B run "$IMAGE" -w "$WORK" -- /bin/sh -c \
 check "workspace is readable" "host-wrote-this" "$out"
 check "workspace is writable" "guest-wrote-this" "$(cat "$WORK/out.txt" 2>&1)"
 rm -rf "$WORK"
+
+echo "== clone mode =="
+
+# The agent must not be able to damage the user's working tree, however hard
+# it tries.
+REPO=$(mktemp -d)
+(
+  cd "$REPO" || exit 1
+  git init -q
+  echo original-content >file.txt
+  git add -A
+  git -c user.email=t@t -c user.name=t commit -q -m initial
+)
+out=$($B run "$CLONE_IMAGE" -w "$REPO" --clone -- /bin/sh -c \
+  'echo AGENT-OVERWROTE >/workspace/file.txt; rm -rf /workspace/.git; cat /workspace/file.txt' 2>&1)
+check "agent sees its own copy" "AGENT-OVERWROTE" "$out"
+check "host tree is untouched" "original-content" "$(cat "$REPO/file.txt")"
+check "host git history survives" "initial" "$(git -C "$REPO" log --oneline 2>&1)"
+rm -rf "$REPO"
 
 echo "== lifecycle =="
 

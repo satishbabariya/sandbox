@@ -37,6 +37,8 @@ public struct SandboxSpec: Sendable {
     public var workspaceDestination: String
     /// Extra host directories to share, beyond the workspace.
     public var mounts: [MountSpec]
+    /// Give the agent a private git clone instead of your working tree.
+    public var cloneWorkspace: Bool
     /// Use this prepared ext4 image as the rootfs instead of unpacking the
     /// image fresh. Set by the agent cache.
     public var preparedRootfs: URL?
@@ -73,6 +75,7 @@ public struct SandboxSpec: Sendable {
         workspace: URL? = nil,
         workspaceDestination: String = "/workspace",
         mounts: [MountSpec] = [],
+        cloneWorkspace: Bool = false,
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
         privileged: Bool = false,
@@ -93,6 +96,7 @@ public struct SandboxSpec: Sendable {
         self.workspace = workspace
         self.workspaceDestination = workspaceDestination
         self.mounts = mounts
+        self.cloneWorkspace = cloneWorkspace
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.privileged = privileged
@@ -294,12 +298,28 @@ public actor Sandbox {
                 config.process.environmentVariables.append("\(key)=\(value)")
             }
             if let workspace = spec.workspace {
-                config.mounts.append(
-                    .share(
-                        source: workspace.path(percentEncoded: false),
-                        destination: spec.workspaceDestination
+                if spec.cloneWorkspace {
+                    // Share the repository read-only somewhere else, and clone
+                    // from it at startup. The agent gets a real working tree it
+                    // can commit to, while the user's own tree is untouchable
+                    // even if the agent runs `git reset --hard`.
+                    config.mounts.append(
+                        .share(
+                            source: workspace.path(percentEncoded: false),
+                            destination: Self.cloneSourceDirectory,
+                            options: ["ro"]
+                        ))
+                    config.process.arguments = Self.cloneBootstrap(
+                        wrapping: config.process.arguments,
+                        destination: spec.workspaceDestination)
+                } else {
+                    config.mounts.append(
+                        .share(
+                            source: workspace.path(percentEncoded: false),
+                            destination: spec.workspaceDestination
+                        )
                     )
-                )
+                }
                 config.process.workingDirectory = spec.workspaceDestination
             }
 
@@ -388,6 +408,35 @@ public actor Sandbox {
             else
               echo "airlock: --docker given but dockerd is not in this image" >&2
             fi
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
+    }
+
+    static let cloneSourceDirectory = "/airlock-source"
+
+    /// Clone the read-only source into a writable workspace, then exec.
+    ///
+    /// `--local` would hardlink into the read-only share, so the clone is made
+    /// with `file://` to force a real copy. A repository with no commits yet
+    /// cannot be cloned, so that falls back to copying the tree.
+    static func cloneBootstrap(wrapping command: [String], destination: String) -> [String] {
+        guard !command.isEmpty else { return command }
+        let script = """
+            set -e
+            if [ ! -d "\(destination)/.git" ]; then
+              mkdir -p "\(destination)"
+              if git -C \(cloneSourceDirectory) rev-parse HEAD >/dev/null 2>&1; then
+                git clone --quiet "file://\(cloneSourceDirectory)" "\(destination)"
+                git -C "\(destination)" remote set-url origin \
+                  "$(git -C \(cloneSourceDirectory) remote get-url origin 2>/dev/null \
+                     || echo file://\(cloneSourceDirectory))"
+              else
+                echo "airlock: no commits to clone; copying the tree instead" >&2
+                cp -a \(cloneSourceDirectory)/. "\(destination)/" 2>/dev/null || true
+              fi
+            fi
+            cd "\(destination)"
             exec "$@"
             """
         return ["/bin/sh", "-c", script, "airlock"] + command
