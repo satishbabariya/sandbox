@@ -46,6 +46,11 @@ struct RunCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Rebuild the agent's cached environment before running.")
     var rebuild: Bool = false
 
+    @Option(
+        name: [.customShort("p"), .long],
+        help: "Publish a sandbox port to the host: [[HOST:]HOSTPORT:]GUESTPORT; repeatable.")
+    var publish: [String] = []
+
     @Flag(name: .long, help: "Print every policy decision when the sandbox exits.")
     var showPolicyLog: Bool = false
 
@@ -103,6 +108,7 @@ struct RunCommand: AsyncParsableCommand {
         if command.isEmpty, let profile { command = profile.command }
 
         let policy = try NetworkPolicy(allow: effectiveAllow, deny: deny)
+        let forwards = try publish.map(PortForward.parse)
 
         if let existing = try? store.load(id), existing.state == .running {
             throw CleanExit.message(
@@ -160,7 +166,8 @@ struct RunCommand: AsyncParsableCommand {
             docker: docker || (profile?.docker ?? false),
             mounts: effectiveMounts,
             preparedRootfs: preparedRootfs,
-            agent: profile?.name
+            agent: profile?.name,
+            ports: publish
         )
         launch.environment = profile?.environment ?? [:]
         // An agent with no explicit workspace should see the directory the
@@ -190,6 +197,10 @@ struct RunCommand: AsyncParsableCommand {
         if persist { try store.save(launch.record) }
 
         try await sandbox.start(gatewayBinary: gateway)
+        for forward in forwards {
+            FileHandle.standardError.write(
+                Data("airlock: published \(forward)\n".utf8))
+        }
         let status = try await sandbox.wait()
 
         if showPolicyLog {

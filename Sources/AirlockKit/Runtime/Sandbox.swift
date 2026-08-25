@@ -51,6 +51,8 @@ public struct SandboxSpec: Sendable {
     public var privileged: Bool
     /// Credentials to broker. The guest receives a sentinel, never the secret.
     public var credentials: [CredentialBinding]
+    /// Ports published from the host into the sandbox.
+    public var ports: [PortForward]
     /// Give the sandbox its own dockerd, backed by a dedicated block device.
     public var docker: Bool
     /// Size of that block device.
@@ -75,6 +77,7 @@ public struct SandboxSpec: Sendable {
         terminal: Bool = false,
         privileged: Bool = false,
         credentials: [CredentialBinding] = [],
+        ports: [PortForward] = [],
         docker: Bool = false,
         dockerDiskBytes: UInt64 = 20 * 1024 * 1024 * 1024,
         stdout: (any Writer)? = nil,
@@ -94,6 +97,7 @@ public struct SandboxSpec: Sendable {
         self.terminal = terminal
         self.privileged = privileged
         self.credentials = credentials
+        self.ports = ports
         self.docker = docker
         self.dockerDiskBytes = dockerDiskBytes
         self.stdout = stdout ?? StreamWriter.standardOutput
@@ -176,7 +180,8 @@ public actor Sandbox {
             configuration: .init(
                 policy: spec.policy,
                 runtimeDirectory: socketDir,
-                credentials: spec.credentials
+                credentials: spec.credentials,
+                ports: spec.ports
             ),
             logger: logger
         )

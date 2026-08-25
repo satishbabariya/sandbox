@@ -28,6 +28,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var preparedRootfs: String?
     /// Agent this sandbox was launched from, for display.
     public var agent: String?
+    /// Published ports, as [[HOST:]HOSTPORT:]GUESTPORT.
+    public var ports: [String]
 
     public init(
         name: String,
@@ -45,7 +47,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         docker: Bool = false,
         mounts: [String] = [],
         preparedRootfs: String? = nil,
-        agent: String? = nil
+        agent: String? = nil,
+        ports: [String] = []
     ) {
         self.name = name
         self.image = image
@@ -63,6 +66,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.mounts = mounts
         self.preparedRootfs = preparedRootfs
         self.agent = agent
+        self.ports = ports
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -86,6 +90,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             terminal: terminal,
             privileged: privileged,
             credentials: bindings,
+            ports: try ports.map(PortForward.parse),
             docker: docker,
             stdout: stdout,
             stderr: stderr

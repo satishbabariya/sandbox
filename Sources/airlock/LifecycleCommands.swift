@@ -247,3 +247,34 @@ struct PruneCommand: AsyncParsableCommand {
         }
     }
 }
+
+struct PortsCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "ports",
+        abstract: "Show ports published from a sandbox."
+    )
+
+    @Argument(help: "Sandbox name.")
+    var name: String
+
+    func run() async throws {
+        let paths = AirlockPaths()
+        _ = try SandboxStore(paths: paths).load(name)
+        let specPath = paths.socketDirectory(name).appending(path: "launch.json")
+        guard let data = try? Data(contentsOf: specPath),
+            let launch = try? JSONDecoder().decode(LaunchSpec.self, from: data)
+        else {
+            print("no published ports recorded for \(name)")
+            return
+        }
+        guard !launch.ports.isEmpty else {
+            print("no published ports")
+            return
+        }
+        for raw in launch.ports {
+            if let forward = try? PortForward.parse(raw) {
+                print(forward.description)
+            }
+        }
+    }
+}

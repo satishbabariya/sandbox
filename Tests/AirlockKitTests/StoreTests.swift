@@ -175,3 +175,59 @@ struct LaunchSpecTests {
         #expect(throws: PolicyError.self) { try launch.sandboxSpec() }
     }
 }
+
+@Suite("PortForward")
+struct PortForwardTests {
+    @Test("a bare port publishes on the same host port")
+    func barePort() throws {
+        let forward = try PortForward.parse("8080")
+        #expect(forward.hostPort == 8080)
+        #expect(forward.guestPort == 8080)
+        #expect(forward.hostAddress == "127.0.0.1")
+    }
+
+    @Test("host:guest maps across")
+    func hostToGuest() throws {
+        let forward = try PortForward.parse("3000:8080")
+        #expect(forward.hostPort == 3000)
+        #expect(forward.guestPort == 8080)
+    }
+
+    @Test("an explicit interface is honoured")
+    func explicitInterface() throws {
+        let forward = try PortForward.parse("0.0.0.0:3000:8080")
+        #expect(forward.hostAddress == "0.0.0.0")
+        #expect(forward.hostPort == 3000)
+        #expect(forward.guestPort == 8080)
+    }
+
+    @Test("defaults to loopback")
+    func defaultsToLoopback() throws {
+        // A published port should not become reachable from the local network
+        // unless the user asks for that explicitly.
+        #expect(try PortForward.parse("9000").hostAddress == "127.0.0.1")
+        #expect(try PortForward.parse("9000:80").hostAddress == "127.0.0.1")
+    }
+
+    @Test(
+        "rejects a privileged host port before anything boots",
+        arguments: ["80", "443:8080", "0.0.0.0:22:2222"])
+    func rejectsPrivileged(_ spec: String) {
+        // airlock does not run as root, so the gateway could not bind these.
+        // Failing here beats failing after the VM has started.
+        #expect(throws: PortForwardError.self) { try PortForward.parse(spec) }
+    }
+
+    @Test("a privileged guest port is fine")
+    func guestPrivilegedIsFine() throws {
+        // Only the host side needs the privilege; inside the sandbox the
+        // process is root and may bind 80 freely.
+        let forward = try PortForward.parse("8080:80")
+        #expect(forward.guestPort == 80)
+    }
+
+    @Test("rejects malformed specs", arguments: ["", "abc", "1:2:3:4", "8080:0", "8080:99999"])
+    func rejectsMalformed(_ spec: String) {
+        #expect(throws: (any Error).self) { try PortForward.parse(spec) }
+    }
+}

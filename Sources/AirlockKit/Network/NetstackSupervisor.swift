@@ -4,7 +4,7 @@ import Logging
 public enum NetstackError: Error, CustomStringConvertible {
     case binaryNotFound(URL)
     case didNotStart(String)
-    case exitedEarly(Int32)
+    case exitedEarly(Int32, detail: String?)
 
     public var description: String {
         switch self {
@@ -12,8 +12,11 @@ public enum NetstackError: Error, CustomStringConvertible {
             return "gvairlock not found at \(url.path); build it with: make -C netstack"
         case .didNotStart(let detail):
             return "gvairlock did not start: \(detail)"
-        case .exitedEarly(let code):
-            return "gvairlock exited with status \(code) before it was ready"
+        case .exitedEarly(let code, let detail):
+            guard let detail, !detail.isEmpty else {
+                return "gvairlock exited with status \(code) before it was ready"
+            }
+            return "gvairlock exited before it was ready: \(detail)"
         }
     }
 }
@@ -36,6 +39,8 @@ public actor NetstackSupervisor {
         /// Credential bindings to resolve and hand the gateway. Empty means no
         /// interception at all.
         public var credentials: [CredentialBinding]
+        /// Ports published from the host into the sandbox.
+        public var ports: [PortForward]
 
         public init(
             policy: NetworkPolicy,
@@ -44,7 +49,8 @@ public actor NetstackSupervisor {
             gatewayIP: String = AirlockInterface.Defaults.gateway,
             gatewayMAC: String = AirlockInterface.Defaults.gatewayMAC,
             mtu: UInt32 = AirlockInterface.Defaults.mtu,
-            credentials: [CredentialBinding] = []
+            credentials: [CredentialBinding] = [],
+            ports: [PortForward] = []
         ) {
             self.policy = policy
             self.runtimeDirectory = runtimeDirectory
@@ -53,6 +59,7 @@ public actor NetstackSupervisor {
             self.gatewayMAC = gatewayMAC
             self.mtu = mtu
             self.credentials = credentials
+            self.ports = ports
         }
     }
 
@@ -177,6 +184,21 @@ public actor NetstackSupervisor {
             [.posixPermissions: 0o600], ofItemAtPath: brokerConfigPath.path)
     }
 
+    /// Pull the gateway's own error line out of its log, so a failure to bind
+    /// a port or parse a rule reaches the user instead of an exit code.
+    private func lastGatewayError() -> String? {
+        let path = config.runtimeDirectory.appending(path: "gateway.log")
+        guard let text = try? String(contentsOf: path, encoding: .utf8) else { return nil }
+        let errors = text.split(separator: "\n").filter { $0.contains("level=error") }
+        guard let last = errors.last else { return nil }
+        // Strip logfmt noise; the message is what matters.
+        if let range = last.range(of: "msg=") {
+            return String(last[range.upperBound...]).trimmingCharacters(
+                in: CharacterSet(charactersIn: "\""))
+        }
+        return String(last)
+    }
+
     private func openLog() throws -> FileHandle {
         let path = config.runtimeDirectory.appending(path: "gateway.log")
         if !FileManager.default.fileExists(atPath: path.path) {
@@ -191,7 +213,8 @@ public actor NetstackSupervisor {
         let deadline = Date().addingTimeInterval(15)
         while !FileManager.default.fileExists(atPath: socket.path) {
             guard process.isRunning else {
-                throw NetstackError.exitedEarly(process.terminationStatus)
+                throw NetstackError.exitedEarly(
+                    process.terminationStatus, detail: lastGatewayError())
             }
             guard Date() < deadline else {
                 process.terminate()
@@ -219,7 +242,19 @@ public actor NetstackSupervisor {
                 deny:\(list(config.policy.deny))
                 auditLog: "\(auditLogPath.path)"
             \(brokerLines)
+            \(forwardLines)
             """
+    }
+
+    /// Host address -> guest address, which is how the gateway expresses a
+    /// published port.
+    private var forwardLines: String {
+        guard !config.ports.isEmpty else { return "" }
+        let entries = config.ports.map { forward in
+            "    \"\(forward.hostAddress):\(forward.hostPort)\": "
+                + "\"\(AirlockInterface.Defaults.guest):\(forward.guestPort)\""
+        }.joined(separator: "\n")
+        return "  forwards:\n" + entries
     }
 
     /// Only emitted when a credential actually resolved, so a sandbox with no
