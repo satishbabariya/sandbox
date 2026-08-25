@@ -1,0 +1,1178 @@
+From f153e2246180bc16349b01e1396ad1c6ee990e78 Mon Sep 17 00:00:00 2001
+From: Satish Babariya <themadengineer99@gmail.com>
+Date: Tue, 25 Aug 2026 19:23:50 +0530
+Subject: [PATCH] Add default-deny egress policy to the virtual network
+
+The gateway terminates every flow from the guest, which makes it the one
+place egress can be enforced that the guest cannot reach. This adds an
+optional policy engine at that point.
+
+pkg/policy holds the matcher and a resolution ledger. Two gates use it:
+
+  - DNS refuses to resolve a name outside policy, so the guest never learns
+    its address, and records every address it does hand out.
+  - The TCP and UDP forwarders refuse to dial an address unless our own
+    resolver vouched for it under an allowed name, or the address itself is
+    allow-listed. An address we never answered is refused, so hardcoding an
+    IP to skip DNS fails closed instead of bypassing the check.
+
+Deny is evaluated before allow everywhere, including across every name
+sharing an address, so a denied name cannot be laundered through a second
+name on the same CDN IP.
+
+Policy is nil by default and every existing call path keeps its behaviour;
+types.Configuration.Policy opts in, so the existing -config flag carries it.
+A malformed rule fails startup rather than being ignored.
+
+Matching semantics are pinned by testdata/host-patterns.json, shared
+verbatim with the Swift implementation that renders airlock policy check.
+---
+ pkg/policy/engine.go                   | 285 +++++++++++++++++++++++++
+ pkg/policy/pattern.go                  | 120 +++++++++++
+ pkg/policy/policy_test.go              | 237 ++++++++++++++++++++
+ pkg/policy/testdata/host-patterns.json |  70 ++++++
+ pkg/services/dns/dns.go                |  32 ++-
+ pkg/services/dns/policy_test.go        | 117 ++++++++++
+ pkg/services/forwarder/tcp.go          |  17 +-
+ pkg/services/forwarder/udp.go          |  13 +-
+ pkg/types/configuration.go             |  21 ++
+ pkg/virtualnetwork/services.go         |  29 ++-
+ 10 files changed, 933 insertions(+), 8 deletions(-)
+ create mode 100644 pkg/policy/engine.go
+ create mode 100644 pkg/policy/pattern.go
+ create mode 100644 pkg/policy/policy_test.go
+ create mode 100644 pkg/policy/testdata/host-patterns.json
+ create mode 100644 pkg/services/dns/policy_test.go
+
+diff --git a/pkg/policy/engine.go b/pkg/policy/engine.go
+new file mode 100644
+index 0000000..ebad9a5
+--- /dev/null
++++ b/pkg/policy/engine.go
+@@ -0,0 +1,285 @@
++package policy
++
++import (
++	"encoding/json"
++	"fmt"
++	"net"
++	"os"
++	"sync"
++	"time"
++)
++
++// Verdict is the outcome of a policy evaluation.
++type Verdict struct {
++	Allowed bool
++	// Rule is the pattern that decided it, empty when nothing matched.
++	Rule string
++	// Reason is a short machine-readable cause, for the audit log.
++	Reason string
++	// Names are the hostnames we had previously resolved to this address.
++	Names []string
++}
++
++const (
++	ReasonAllowRule    = "allow-rule"
++	ReasonDenyRule     = "deny-rule"
++	ReasonNoAllowRule  = "no-allow-rule"
++	ReasonUnresolvedIP = "unresolved-address"
++)
++
++// Engine is the authoritative egress policy for one sandbox.
++//
++// It answers two different questions, and the pair is what gives the guarantee:
++//
++//   - AllowName gates DNS. A name outside policy is never resolved, so the
++//     guest never learns its address.
++//   - AllowDial gates the outbound socket. It permits an address only if that
++//     address was handed out by our own resolver for a name policy allows, or
++//     is itself allow-listed literally.
++//
++// Because the guest has no other resolver and no other route, an address we
++// never answered is an address the guest should not have — so hardcoding an IP
++// to skip DNS fails closed rather than bypassing the check.
++type Engine struct {
++	mu     sync.RWMutex
++	allow  []Pattern
++	deny   []Pattern
++	ledger map[string]*ledgerEntry
++
++	auditMu sync.Mutex
++	audit   *os.File
++
++	now func() time.Time
++}
++
++type ledgerEntry struct {
++	names   map[string]time.Time // name -> expiry
++	lastUse time.Time
++}
++
++// minLedgerTTL keeps a resolved address usable for a sensible minimum even when
++// upstream hands back a very short TTL. Connections are made shortly after the
++// lookup, and a 5s TTL would otherwise race the dial.
++const minLedgerTTL = 5 * time.Minute
++
++// maxLedgerEntries bounds memory against a guest that resolves endlessly.
++const maxLedgerEntries = 8192
++
++func NewEngine(allow, deny []string, auditPath string) (*Engine, error) {
++	e := &Engine{
++		ledger: make(map[string]*ledgerEntry),
++		now:    time.Now,
++	}
++	for _, raw := range allow {
++		p, err := ParsePattern(raw)
++		if err != nil {
++			return nil, err
++		}
++		e.allow = append(e.allow, p)
++	}
++	for _, raw := range deny {
++		p, err := ParsePattern(raw)
++		if err != nil {
++			return nil, err
++		}
++		e.deny = append(e.deny, p)
++	}
++	if auditPath != "" {
++		f, err := os.OpenFile(auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
++		if err != nil {
++			return nil, fmt.Errorf("cannot open policy audit log: %w", err)
++		}
++		e.audit = f
++	}
++	return e, nil
++}
++
++func (e *Engine) Close() error {
++	e.auditMu.Lock()
++	defer e.auditMu.Unlock()
++	if e.audit != nil {
++		err := e.audit.Close()
++		e.audit = nil
++		return err
++	}
++	return nil
++}
++
++// evaluate applies deny-then-allow to a hostname. Deny always wins; anything
++// matching neither list is denied.
++func (e *Engine) evaluate(host string, port uint16) Verdict {
++	for _, p := range e.deny {
++		if p.Matches(host, port) {
++			return Verdict{Allowed: false, Rule: p.Raw, Reason: ReasonDenyRule}
++		}
++	}
++	for _, p := range e.allow {
++		if p.Matches(host, port) {
++			return Verdict{Allowed: true, Rule: p.Raw, Reason: ReasonAllowRule}
++		}
++	}
++	return Verdict{Allowed: false, Reason: ReasonNoAllowRule}
++}
++
++// AllowName gates a DNS query. Port is unknown at resolution time, so a
++// port-qualified rule is treated as covering the name; the real enforcement for
++// that rule happens again at dial time in AllowDial.
++func (e *Engine) AllowName(name string) Verdict {
++	e.mu.RLock()
++	defer e.mu.RUnlock()
++
++	host := normalizeHost(name)
++	for _, p := range e.deny {
++		if p.Port == 0 && p.Matches(host, 0) {
++			return Verdict{Allowed: false, Rule: p.Raw, Reason: ReasonDenyRule}
++		}
++	}
++	for _, p := range e.allow {
++		// Ignore the port when deciding whether to resolve at all.
++		bare := Pattern{Host: p.Host, Wildcard: p.Wildcard, Raw: p.Raw}
++		if bare.Matches(host, 0) {
++			return Verdict{Allowed: true, Rule: p.Raw, Reason: ReasonAllowRule}
++		}
++	}
++	return Verdict{Allowed: false, Reason: ReasonNoAllowRule}
++}
++
++// NoteResolution records that we answered `name` with `ips`. Only call this for
++// answers actually returned to the guest.
++func (e *Engine) NoteResolution(name string, ips []net.IP, ttl time.Duration) {
++	if ttl < minLedgerTTL {
++		ttl = minLedgerTTL
++	}
++	host := normalizeHost(name)
++	now := e.now()
++	expiry := now.Add(ttl)
++
++	e.mu.Lock()
++	defer e.mu.Unlock()
++
++	e.pruneLocked(now)
++	for _, ip := range ips {
++		key := ip.String()
++		entry, ok := e.ledger[key]
++		if !ok {
++			if len(e.ledger) >= maxLedgerEntries {
++				// Full and nothing expired: refuse to grow. Failing to record
++				// means the dial is denied, which is the safe direction.
++				continue
++			}
++			entry = &ledgerEntry{names: make(map[string]time.Time)}
++			e.ledger[key] = entry
++		}
++		if cur, ok := entry.names[host]; !ok || expiry.After(cur) {
++			entry.names[host] = expiry
++		}
++		entry.lastUse = now
++	}
++}
++
++func (e *Engine) pruneLocked(now time.Time) {
++	for key, entry := range e.ledger {
++		for name, expiry := range entry.names {
++			if now.After(expiry) {
++				delete(entry.names, name)
++			}
++		}
++		if len(entry.names) == 0 {
++			delete(e.ledger, key)
++		}
++	}
++}
++
++// AllowDial gates an outbound connection to a literal address.
++func (e *Engine) AllowDial(proto string, ip net.IP, port uint16) Verdict {
++	v := e.allowDial(ip, port)
++	e.record(proto, ip, port, v)
++	return v
++}
++
++func (e *Engine) allowDial(ip net.IP, port uint16) Verdict {
++	e.mu.Lock()
++	now := e.now()
++	e.pruneLocked(now)
++	entry := e.ledger[ip.String()]
++	var names []string
++	if entry != nil {
++		for name := range entry.names {
++			names = append(names, name)
++		}
++		entry.lastUse = now
++	}
++	e.mu.Unlock()
++
++	e.mu.RLock()
++	defer e.mu.RUnlock()
++
++	// A name we resolved for this address, still within policy at this port.
++	// Deny is checked across every associated name before any allow, so a
++	// denied name cannot be laundered through a second name on a shared IP.
++	for _, name := range names {
++		for _, p := range e.deny {
++			if p.Matches(name, port) {
++				return Verdict{Allowed: false, Rule: p.Raw, Reason: ReasonDenyRule, Names: names}
++			}
++		}
++	}
++	for _, name := range names {
++		for _, p := range e.allow {
++			if p.Matches(name, port) {
++				return Verdict{Allowed: true, Rule: p.Raw, Reason: ReasonAllowRule, Names: names}
++			}
++		}
++	}
++
++	// A literal address in the rules, for pinning a host with no DNS name.
++	literal := ip.String()
++	for _, p := range e.deny {
++		if p.Matches(literal, port) {
++			return Verdict{Allowed: false, Rule: p.Raw, Reason: ReasonDenyRule, Names: names}
++		}
++	}
++	for _, p := range e.allow {
++		if p.Matches(literal, port) {
++			return Verdict{Allowed: true, Rule: p.Raw, Reason: ReasonAllowRule, Names: names}
++		}
++	}
++
++	if len(names) == 0 {
++		// The hardcoded-IP case: an address our resolver never handed out.
++		return Verdict{Allowed: false, Reason: ReasonUnresolvedIP}
++	}
++	return Verdict{Allowed: false, Reason: ReasonNoAllowRule, Names: names}
++}
++
++type auditRecord struct {
++	Time    string   `json:"time"`
++	Proto   string   `json:"proto"`
++	Address string   `json:"address"`
++	Port    uint16   `json:"port"`
++	Allowed bool     `json:"allowed"`
++	Rule    string   `json:"rule,omitempty"`
++	Reason  string   `json:"reason"`
++	Names   []string `json:"names,omitempty"`
++}
++
++func (e *Engine) record(proto string, ip net.IP, port uint16, v Verdict) {
++	e.auditMu.Lock()
++	defer e.auditMu.Unlock()
++	if e.audit == nil {
++		return
++	}
++	rec := auditRecord{
++		Time:    e.now().UTC().Format(time.RFC3339Nano),
++		Proto:   proto,
++		Address: ip.String(),
++		Port:    port,
++		Allowed: v.Allowed,
++		Rule:    v.Rule,
++		Reason:  v.Reason,
++		Names:   v.Names,
++	}
++	if b, err := json.Marshal(rec); err == nil {
++		_, _ = e.audit.Write(append(b, '\n'))
++	}
++}
+diff --git a/pkg/policy/pattern.go b/pkg/policy/pattern.go
+new file mode 100644
+index 0000000..81c2ad4
+--- /dev/null
++++ b/pkg/policy/pattern.go
+@@ -0,0 +1,120 @@
++// Package policy implements airlock's default-deny egress policy for the
++// virtual network stack.
++//
++// This is the authoritative enforcement point. The guest has exactly one
++// network device, whose wire is a datagram socket held by the host, so every
++// frame the guest emits arrives here regardless of what the guest believes
++// about its own routes, firewall, or proxy environment.
++package policy
++
++import (
++	"fmt"
++	"strconv"
++	"strings"
++)
++
++// Pattern is one entry in an allow- or deny-list.
++//
++// Three shapes are accepted: an exact host (api.anthropic.com), an exact host
++// with a port (registry.example.com:5000), and a leading-label wildcard
++// (*.githubusercontent.com).
++//
++// The matching semantics here MUST agree exactly with the Swift implementation
++// in AirlockKit. Both are exercised against testdata/host-patterns.json.
++type Pattern struct {
++	// Host is lowercased. For a wildcard it is the suffix with the leading
++	// "*." removed, so "*.example.com" stores "example.com".
++	Host     string
++	Port     uint16 // 0 means "any port"
++	Wildcard bool
++	Raw      string
++}
++
++func ParsePattern(raw string) (Pattern, error) {
++	trimmed := strings.TrimSpace(raw)
++	if trimmed == "" {
++		return Pattern{}, fmt.Errorf("host pattern must not be empty")
++	}
++
++	bad := func(reason string) error {
++		return fmt.Errorf("invalid host pattern %q: %s", raw, reason)
++	}
++
++	if strings.Contains(trimmed, "/") {
++		return Pattern{}, bad("expected a bare host, not a URL or path")
++	}
++
++	hostPart := trimmed
++	var port uint16
++
++	if i := strings.LastIndex(trimmed, ":"); i >= 0 && !strings.HasPrefix(trimmed, "[") {
++		if strings.Count(trimmed, ":") > 1 {
++			return Pattern{}, bad("bracket IPv6 literals as [::1]")
++		}
++		before, after := trimmed[:i], trimmed[i+1:]
++		n, err := strconv.ParseUint(after, 10, 16)
++		if err != nil || n == 0 {
++			return Pattern{}, bad("port must be an integer in 1...65535")
++		}
++		if before == "" {
++			return Pattern{}, bad("missing host before port")
++		}
++		hostPart, port = before, uint16(n)
++	}
++
++	wildcard := false
++	if strings.HasPrefix(hostPart, "*") {
++		if !strings.HasPrefix(hostPart, "*.") {
++			return Pattern{}, bad("a wildcard must be a whole label, as in *.example.com")
++		}
++		hostPart = hostPart[2:]
++		wildcard = true
++		if hostPart == "" {
++			return Pattern{}, bad("a wildcard needs a suffix, as in *.example.com")
++		}
++	}
++
++	if strings.Contains(hostPart, "*") {
++		return Pattern{}, bad("a wildcard is only allowed in the leading label")
++	}
++	if hostPart == "" {
++		return Pattern{}, bad("missing host")
++	}
++
++	return Pattern{
++		Host:     normalizeHost(hostPart),
++		Port:     port,
++		Wildcard: wildcard,
++		Raw:      trimmed,
++	}, nil
++}
++
++// normalizeHost lowercases and strips a trailing root label, so "EXAMPLE.com."
++// and "example.com" compare equal.
++func normalizeHost(h string) string {
++	h = strings.ToLower(h)
++	for strings.HasSuffix(h, ".") {
++		h = h[:len(h)-1]
++	}
++	return h
++}
++
++// Matches reports whether the pattern covers host:port. A port of 0 on the
++// query means "unspecified"; a pattern that pins a port will not match it.
++func (p Pattern) Matches(host string, port uint16) bool {
++	if p.Port != 0 && p.Port != port {
++		return false
++	}
++	candidate := normalizeHost(host)
++	if candidate == "" {
++		return false
++	}
++	if p.Wildcard {
++		// Apex, or a suffix on a label boundary. The "." is what stops
++		// "*.example.com" matching "evilexample.com".
++		return candidate == p.Host || strings.HasSuffix(candidate, "."+p.Host)
++	}
++	return candidate == p.Host
++}
++
++func (p Pattern) String() string { return p.Raw }
+diff --git a/pkg/policy/policy_test.go b/pkg/policy/policy_test.go
+new file mode 100644
+index 0000000..8441275
+--- /dev/null
++++ b/pkg/policy/policy_test.go
+@@ -0,0 +1,237 @@
++package policy
++
++import (
++	"encoding/json"
++	"net"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++type vectors struct {
++	Invalid []string `json:"invalid"`
++	Matches []struct {
++		Pattern string `json:"pattern"`
++		Host    string `json:"host"`
++		Port    uint16 `json:"port"`
++		Expect  bool   `json:"expect"`
++	} `json:"matches"`
++	Policies []struct {
++		Name  string   `json:"name"`
++		Allow []string `json:"allow"`
++		Deny  []string `json:"deny"`
++		Cases []struct {
++			Host    string `json:"host"`
++			Port    uint16 `json:"port"`
++			Allowed bool   `json:"allowed"`
++		} `json:"cases"`
++	} `json:"policies"`
++}
++
++func loadVectors(t *testing.T) vectors {
++	t.Helper()
++	b, err := os.ReadFile(filepath.Join("testdata", "host-patterns.json"))
++	if err != nil {
++		t.Fatalf("read vectors: %v", err)
++	}
++	var v vectors
++	if err := json.Unmarshal(b, &v); err != nil {
++		t.Fatalf("parse vectors: %v", err)
++	}
++	return v
++}
++
++// TestSharedVectors is the conformance gate. AirlockKit's Swift matcher reads
++// the identical file; if these two ever disagree, `airlock policy check` lies
++// about what the enforcement point will actually do.
++func TestSharedVectors(t *testing.T) {
++	v := loadVectors(t)
++
++	for _, raw := range v.Invalid {
++		if _, err := ParsePattern(raw); err == nil {
++			t.Errorf("ParsePattern(%q) should have failed", raw)
++		}
++	}
++
++	for _, c := range v.Matches {
++		p, err := ParsePattern(c.Pattern)
++		if err != nil {
++			t.Fatalf("ParsePattern(%q): %v", c.Pattern, err)
++		}
++		if got := p.Matches(c.Host, c.Port); got != c.Expect {
++			t.Errorf("Pattern(%q).Matches(%q, %d) = %v, want %v",
++				c.Pattern, c.Host, c.Port, got, c.Expect)
++		}
++	}
++
++	for _, pol := range v.Policies {
++		e, err := NewEngine(pol.Allow, pol.Deny, "")
++		if err != nil {
++			t.Fatalf("%s: NewEngine: %v", pol.Name, err)
++		}
++		for _, c := range pol.Cases {
++			if got := e.evaluate(c.Host, c.Port).Allowed; got != c.Allowed {
++				t.Errorf("%s: evaluate(%q, %d) = %v, want %v",
++					pol.Name, c.Host, c.Port, got, c.Allowed)
++			}
++		}
++	}
++}
++
++func mustEngine(t *testing.T, allow, deny []string) *Engine {
++	t.Helper()
++	e, err := NewEngine(allow, deny, "")
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++	return e
++}
++
++// The central claim of the product: an address the resolver never handed out
++// cannot be dialled, so skipping DNS does not skip policy.
++func TestHardcodedIPIsRefused(t *testing.T) {
++	e := mustEngine(t, []string{"*.anthropic.com"}, nil)
++
++	v := e.AllowDial("tcp", net.ParseIP("13.37.13.37"), 443)
++	if v.Allowed {
++		t.Fatal("an address never resolved by us must not be dialable")
++	}
++	if v.Reason != ReasonUnresolvedIP {
++		t.Errorf("reason = %q, want %q", v.Reason, ReasonUnresolvedIP)
++	}
++}
++
++func TestResolvedAddressIsDialable(t *testing.T) {
++	e := mustEngine(t, []string{"*.anthropic.com"}, nil)
++	ip := net.ParseIP("160.79.104.10")
++
++	e.NoteResolution("api.anthropic.com", []net.IP{ip}, time.Minute)
++
++	if v := e.AllowDial("tcp", ip, 443); !v.Allowed {
++		t.Fatalf("resolved allowed name should be dialable, got %+v", v)
++	}
++}
++
++// A CDN address may serve several names. If any name on it is denied, the
++// address is denied — a denied name must not be laundered through a second
++// name that happens to share the IP.
++func TestDenyWinsAcrossSharedAddress(t *testing.T) {
++	e := mustEngine(t, []string{"*.github.com"}, []string{"gist.github.com"})
++	ip := net.ParseIP("140.82.113.4")
++
++	e.NoteResolution("api.github.com", []net.IP{ip}, time.Minute)
++	e.NoteResolution("gist.github.com", []net.IP{ip}, time.Minute)
++
++	v := e.AllowDial("tcp", ip, 443)
++	if v.Allowed {
++		t.Fatal("shared address carrying a denied name must be refused")
++	}
++	if v.Reason != ReasonDenyRule {
++		t.Errorf("reason = %q, want %q", v.Reason, ReasonDenyRule)
++	}
++}
++
++func TestDNSGateRefusesUnallowedName(t *testing.T) {
++	e := mustEngine(t, []string{"*.anthropic.com"}, nil)
++
++	if v := e.AllowName("exfil.evil.com"); v.Allowed {
++		t.Fatal("a name outside policy must not be resolved")
++	}
++	if v := e.AllowName("api.anthropic.com"); !v.Allowed {
++		t.Fatal("a name inside policy must resolve")
++	}
++}
++
++// A port-qualified allow still gates the name at resolution time, but the port
++// itself is only enforceable once we know it, at dial time.
++func TestPortQualifiedRuleEnforcedAtDial(t *testing.T) {
++	e := mustEngine(t, []string{"registry.example.com:5000"}, nil)
++	ip := net.ParseIP("10.11.12.13")
++
++	if v := e.AllowName("registry.example.com"); !v.Allowed {
++		t.Fatal("port-qualified rule should still permit resolution")
++	}
++	e.NoteResolution("registry.example.com", []net.IP{ip}, time.Minute)
++
++	if v := e.AllowDial("tcp", ip, 5000); !v.Allowed {
++		t.Errorf("port 5000 should be allowed, got %+v", v)
++	}
++	if v := e.AllowDial("tcp", ip, 443); v.Allowed {
++		t.Error("port 443 must be refused by a :5000 rule")
++	}
++}
++
++func TestLiteralAddressRuleWorksWithoutDNS(t *testing.T) {
++	e := mustEngine(t, []string{"10.0.0.5"}, nil)
++
++	if v := e.AllowDial("tcp", net.ParseIP("10.0.0.5"), 8080); !v.Allowed {
++		t.Fatalf("literal address rule should permit the dial, got %+v", v)
++	}
++	if v := e.AllowDial("tcp", net.ParseIP("10.0.0.6"), 8080); v.Allowed {
++		t.Fatal("a neighbouring address must not be permitted")
++	}
++}
++
++func TestLedgerEntriesExpire(t *testing.T) {
++	e := mustEngine(t, []string{"*.anthropic.com"}, nil)
++	base := time.Now()
++	e.now = func() time.Time { return base }
++
++	ip := net.ParseIP("160.79.104.10")
++	e.NoteResolution("api.anthropic.com", []net.IP{ip}, time.Minute)
++
++	if v := e.AllowDial("tcp", ip, 443); !v.Allowed {
++		t.Fatal("should be allowed while the entry is live")
++	}
++
++	// minLedgerTTL floors the recorded TTL, so step past that.
++	e.now = func() time.Time { return base.Add(minLedgerTTL + time.Minute) }
++	if v := e.AllowDial("tcp", ip, 443); v.Allowed {
++		t.Fatal("an expired ledger entry must stop authorising the address")
++	}
++}
++
++func TestEmptyPolicyDeniesEverything(t *testing.T) {
++	e := mustEngine(t, nil, nil)
++	ip := net.ParseIP("1.1.1.1")
++	e.NoteResolution("anything.com", []net.IP{ip}, time.Minute)
++
++	if v := e.AllowDial("tcp", ip, 443); v.Allowed {
++		t.Fatal("a policy with no rules must reach nothing")
++	}
++	if v := e.AllowName("anything.com"); v.Allowed {
++		t.Fatal("a policy with no rules must resolve nothing")
++	}
++}
++
++func TestAuditLogRecordsDecisions(t *testing.T) {
++	dir := t.TempDir()
++	path := filepath.Join(dir, "policy.jsonl")
++	e, err := NewEngine([]string{"*.anthropic.com"}, nil, path)
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++	e.AllowDial("tcp", net.ParseIP("13.37.13.37"), 443)
++	if err := e.Close(); err != nil {
++		t.Fatalf("Close: %v", err)
++	}
++
++	b, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatalf("read audit log: %v", err)
++	}
++	var rec auditRecord
++	if err := json.Unmarshal(b[:len(b)-1], &rec); err != nil {
++		t.Fatalf("parse audit record: %v", err)
++	}
++	if rec.Allowed || rec.Reason != ReasonUnresolvedIP || rec.Address != "13.37.13.37" {
++		t.Errorf("unexpected audit record: %+v", rec)
++	}
++}
++
++func TestInvalidPatternRejectedAtConstruction(t *testing.T) {
++	if _, err := NewEngine([]string{"*bad.com"}, nil, ""); err == nil {
++		t.Fatal("a malformed pattern must fail engine construction, not be ignored")
++	}
++}
+diff --git a/pkg/policy/testdata/host-patterns.json b/pkg/policy/testdata/host-patterns.json
+new file mode 100644
+index 0000000..ada0650
+--- /dev/null
++++ b/pkg/policy/testdata/host-patterns.json
+@@ -0,0 +1,70 @@
++{
++  "_comment": [
++    "Shared conformance vectors for the host-pattern matcher.",
++    "Two implementations must agree exactly: the Swift one in AirlockKit (advisory,",
++    "powers `airlock policy check`) and the Go one in the netstack fork (authoritative,",
++    "actually refuses the connection). A disagreement between them is a silent",
++    "correctness bug, so both test suites read this file.",
++    "Add a case here first, then make both sides pass it."
++  ],
++  "invalid": [
++    "",
++    "*",
++    "*.",
++    "*example.com",
++    "a.*.example.com",
++    "example.com:0",
++    "example.com:65536",
++    "example.com:notaport",
++    "http://example.com",
++    "example.com/path"
++  ],
++  "matches": [
++    { "pattern": "api.anthropic.com", "host": "api.anthropic.com", "port": 443, "expect": true },
++    { "pattern": "api.anthropic.com", "host": "api.anthropic.com", "port": 8080, "expect": true },
++    { "pattern": "api.anthropic.com", "host": "API.ANTHROPIC.COM", "port": 443, "expect": true },
++    { "pattern": "api.anthropic.com", "host": "api.anthropic.com.", "port": 443, "expect": true },
++    { "pattern": "api.anthropic.com", "host": "evil.com", "port": 443, "expect": false },
++    { "pattern": "api.anthropic.com", "host": "sub.api.anthropic.com", "port": 443, "expect": false },
++
++    { "pattern": "registry.example.com:5000", "host": "registry.example.com", "port": 5000, "expect": true },
++    { "pattern": "registry.example.com:5000", "host": "registry.example.com", "port": 443, "expect": false },
++
++    { "pattern": "*.githubusercontent.com", "host": "raw.githubusercontent.com", "port": 443, "expect": true },
++    { "pattern": "*.githubusercontent.com", "host": "githubusercontent.com", "port": 443, "expect": true },
++    { "pattern": "*.example.com", "host": "a.b.c.example.com", "port": 443, "expect": true },
++
++    { "pattern": "*.example.com", "host": "notexample.com", "port": 443, "expect": false },
++    { "pattern": "*.example.com", "host": "evilexample.com", "port": 443, "expect": false },
++    { "pattern": "*.example.com", "host": "example.com.evil.net", "port": 443, "expect": false },
++    { "pattern": "*.example.com", "host": "EXAMPLE.COM", "port": 443, "expect": true }
++  ],
++  "policies": [
++    {
++      "name": "empty policy denies everything",
++      "allow": [],
++      "deny": [],
++      "cases": [
++        { "host": "api.anthropic.com", "port": 443, "allowed": false }
++      ]
++    },
++    {
++      "name": "deny wins over a broader allow",
++      "allow": ["*.github.com"],
++      "deny": ["gist.github.com"],
++      "cases": [
++        { "host": "api.github.com", "port": 443, "allowed": true },
++        { "host": "gist.github.com", "port": 443, "allowed": false }
++      ]
++    },
++    {
++      "name": "unmatched falls through to deny",
++      "allow": ["*.anthropic.com"],
++      "deny": [],
++      "cases": [
++        { "host": "api.anthropic.com", "port": 443, "allowed": true },
++        { "host": "pypi.org", "port": 443, "allowed": false }
++      ]
++    }
++  ]
++}
+diff --git a/pkg/services/dns/dns.go b/pkg/services/dns/dns.go
+index 9f86fe8..1316dea 100644
+--- a/pkg/services/dns/dns.go
++++ b/pkg/services/dns/dns.go
+@@ -11,6 +11,7 @@ import (
+ 
+ 	"github.com/containers/gvisor-tap-vsock/pkg/types"
+ 	"github.com/miekg/dns"
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -27,6 +28,10 @@ type dnsHandler struct {
+ 	zones     []types.Zone
+ 	zonesLock sync.RWMutex
+ 	upstream  upstreamResolver
++	// policy, when non-nil, gates which names may be resolved at all and
++	// records every address handed out so the forwarder can later tell an
++	// address we vouched for from one the guest invented.
++	policy *policy.Engine
+ }
+ 
+ func (h *dnsHandler) handle(w dns.ResponseWriter, r *dns.Msg, responseMessageSize int) {
+@@ -122,6 +127,17 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+ 			return
+ 		}
+ 
++		// Names outside policy are never resolved, so the guest never learns
++		// their addresses. REFUSED is returned rather than NXDOMAIN: the name
++		// very likely exists, we are declining to look it up.
++		if h.policy != nil {
++			if v := h.policy.AllowName(q.Name); !v.Allowed {
++				log.Infof("policy: refused dns %s (%s)", q.Name, v.Reason)
++				m.Rcode = dns.RcodeRefused
++				return
++			}
++		}
++
+ 		resolver := h.upstream
+ 		switch q.Qtype {
+ 		case dns.TypeA:
+@@ -130,6 +146,7 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+ 				m.Rcode = dns.RcodeNameError
+ 				return
+ 			}
++			var vouched []net.IP
+ 			for _, ip := range ips {
+ 				if len(ip.IP.To4()) != net.IPv4len {
+ 					continue
+@@ -143,6 +160,10 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+ 					},
+ 					A: ip.IP.To4(),
+ 				})
++				vouched = append(vouched, ip.IP.To4())
++			}
++			if h.policy != nil && len(vouched) > 0 {
++				h.policy.NoteResolution(q.Name, vouched, 0)
+ 			}
+ 		case dns.TypeCNAME:
+ 			cname, err := resolver.LookupCNAME(context.TODO(), q.Name)
+@@ -244,10 +265,19 @@ type Server struct {
+ }
+ 
+ func New(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone) (*Server, error) {
++	return NewWithPolicy(udpConn, tcpLn, zones, nil)
++}
++
++func NewWithPolicy(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, pol *policy.Engine) (*Server, error) {
+ 	upstream := &net.Resolver{
+ 		PreferGo: false,
+ 	}
+-	return NewWithUpstreamResolver(udpConn, tcpLn, zones, upstream)
++	srv, err := NewWithUpstreamResolver(udpConn, tcpLn, zones, upstream)
++	if err != nil {
++		return nil, err
++	}
++	srv.handler.policy = pol
++	return srv, nil
+ }
+ 
+ func NewWithUpstreamResolver(udpConn net.PacketConn, tcpLn net.Listener, zones []types.Zone, upstream upstreamResolver) (*Server, error) {
+diff --git a/pkg/services/dns/policy_test.go b/pkg/services/dns/policy_test.go
+new file mode 100644
+index 0000000..4f3837c
+--- /dev/null
++++ b/pkg/services/dns/policy_test.go
+@@ -0,0 +1,117 @@
++package dns
++
++import (
++	"context"
++	"net"
++	"testing"
++
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
++	"github.com/containers/gvisor-tap-vsock/pkg/types"
++	"github.com/miekg/dns"
++)
++
++// stubResolver answers every A lookup with one fixed address, so the tests
++// exercise the gate rather than the network.
++type stubResolver struct {
++	addr    net.IP
++	queried []string
++}
++
++func (s *stubResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
++	s.queried = append(s.queried, host)
++	return []net.IPAddr{{IP: s.addr}}, nil
++}
++func (s *stubResolver) LookupCNAME(context.Context, string) (string, error) { return "", nil }
++func (s *stubResolver) LookupMX(context.Context, string) ([]*net.MX, error) { return nil, nil }
++func (s *stubResolver) LookupNS(context.Context, string) ([]*net.NS, error) { return nil, nil }
++func (s *stubResolver) LookupSRV(context.Context, string, string, string) (string, []*net.SRV, error) {
++	return "", nil, nil
++}
++func (s *stubResolver) LookupTXT(context.Context, string) ([]string, error) { return nil, nil }
++
++func newGatedHandler(t *testing.T, allow, deny []string, addr string) (*dnsHandler, *policy.Engine, *stubResolver) {
++	t.Helper()
++	eng, err := policy.NewEngine(allow, deny, "")
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++	res := &stubResolver{addr: net.ParseIP(addr)}
++	return &dnsHandler{zones: []types.Zone{}, upstream: res, policy: eng}, eng, res
++}
++
++func query(h *dnsHandler, name string) *dns.Msg {
++	m := new(dns.Msg)
++	m.Question = []dns.Question{{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}}
++	h.addAnswers(m)
++	return m
++}
++
++// A name outside policy must never reach the upstream resolver at all — that is
++// what stops the guest from learning an address it could then dial directly.
++func TestDeniedNameIsNeverResolved(t *testing.T) {
++	h, _, res := newGatedHandler(t, []string{"*.anthropic.com"}, nil, "10.0.0.1")
++
++	m := query(h, "exfil.evil.com.")
++
++	if m.Rcode != dns.RcodeRefused {
++		t.Errorf("Rcode = %v, want REFUSED", dns.RcodeToString[m.Rcode])
++	}
++	if len(m.Answer) != 0 {
++		t.Errorf("expected no answers, got %d", len(m.Answer))
++	}
++	if len(res.queried) != 0 {
++		t.Errorf("upstream must not be consulted for a denied name, got %v", res.queried)
++	}
++}
++
++func TestAllowedNameResolvesAndIsVouchedFor(t *testing.T) {
++	h, eng, res := newGatedHandler(t, []string{"*.anthropic.com"}, nil, "160.79.104.10")
++
++	m := query(h, "api.anthropic.com.")
++
++	if m.Rcode != dns.RcodeSuccess {
++		t.Fatalf("Rcode = %v, want SUCCESS", dns.RcodeToString[m.Rcode])
++	}
++	if len(m.Answer) != 1 {
++		t.Fatalf("expected 1 answer, got %d", len(m.Answer))
++	}
++	if len(res.queried) != 1 {
++		t.Fatalf("upstream should have been consulted once, got %v", res.queried)
++	}
++
++	// The address we just handed out must now be dialable; a neighbouring one
++	// must not be.
++	if v := eng.AllowDial("tcp", net.ParseIP("160.79.104.10"), 443); !v.Allowed {
++		t.Errorf("resolved address should be dialable, got %+v", v)
++	}
++	if v := eng.AllowDial("tcp", net.ParseIP("160.79.104.11"), 443); v.Allowed {
++		t.Error("an address we never answered must not be dialable")
++	}
++}
++
++// Deny must beat a broader allow at the resolver, not just at the dial.
++func TestDenyBeatsAllowAtResolution(t *testing.T) {
++	h, _, res := newGatedHandler(t, []string{"*.github.com"}, []string{"gist.github.com"}, "140.82.113.4")
++
++	if m := query(h, "api.github.com."); m.Rcode != dns.RcodeSuccess {
++		t.Errorf("allowed name: Rcode = %v, want SUCCESS", dns.RcodeToString[m.Rcode])
++	}
++	if m := query(h, "gist.github.com."); m.Rcode != dns.RcodeRefused {
++		t.Errorf("denied name: Rcode = %v, want REFUSED", dns.RcodeToString[m.Rcode])
++	}
++	if len(res.queried) != 1 {
++		t.Errorf("only the allowed name should reach upstream, got %v", res.queried)
++	}
++}
++
++// With no policy configured the handler must behave exactly as upstream does.
++func TestNilPolicyLeavesResolutionUnrestricted(t *testing.T) {
++	res := &stubResolver{addr: net.ParseIP("1.2.3.4")}
++	h := &dnsHandler{zones: []types.Zone{}, upstream: res, policy: nil}
++
++	m := query(h, "anything.example.org.")
++	if m.Rcode != dns.RcodeSuccess || len(m.Answer) != 1 {
++		t.Errorf("unrestricted mode should resolve normally: rcode=%v answers=%d",
++			dns.RcodeToString[m.Rcode], len(m.Answer))
++	}
++}
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index ae18ada..6e03eb1 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -6,6 +6,7 @@ import (
+ 	"net"
+ 	"sync"
+ 
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
+ 	"github.com/inetaf/tcpproxy"
+ 	log "github.com/sirupsen/logrus"
+ 	"gvisor.dev/gvisor/pkg/tcpip"
+@@ -17,7 +18,7 @@ import (
+ 
+ const linkLocalSubnet = "169.254.0.0/16"
+ 
+-func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool) *tcp.Forwarder {
++func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, pol *policy.Engine) *tcp.Forwarder {
+ 	return tcp.NewForwarder(s, 0, 10, func(r *tcp.ForwarderRequest) {
+ 		localAddress := r.ID().LocalAddress
+ 
+@@ -31,6 +32,20 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 			localAddress = replaced
+ 		}
+ 		natLock.Unlock()
++
++		// Egress policy. Enforced after NAT translation so the rule is
++		// evaluated against the address we are actually about to dial.
++		// r.Complete(true) sends a RST, so the guest sees a refused
++		// connection rather than a silent hang.
++		if pol != nil {
++			ip := net.IP(localAddress.AsSlice())
++			if v := pol.AllowDial("tcp", ip, r.ID().LocalPort); !v.Allowed {
++				log.Infof("policy: refused tcp %s:%d (%s)", ip, r.ID().LocalPort, v.Reason)
++				r.Complete(true)
++				return
++			}
++		}
++
+ 		outbound, err := net.Dial("tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)))
+ 		if err != nil {
+ 			log.Tracef("net.Dial() = %v", err)
+diff --git a/pkg/services/forwarder/udp.go b/pkg/services/forwarder/udp.go
+index 1269449..92e7d83 100644
+--- a/pkg/services/forwarder/udp.go
++++ b/pkg/services/forwarder/udp.go
+@@ -5,6 +5,7 @@ import (
+ 	"strconv"
+ 	"sync"
+ 
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
+ 	log "github.com/sirupsen/logrus"
+ 	"gvisor.dev/gvisor/pkg/tcpip"
+ 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
+@@ -14,7 +15,7 @@ import (
+ 	"gvisor.dev/gvisor/pkg/waiter"
+ )
+ 
+-func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool) *udp.Forwarder {
++func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, ec2MetadataAccess bool, pol *policy.Engine) *udp.Forwarder {
+ 	return udp.NewForwarder(s, func(r *udp.ForwarderRequest) bool {
+ 		localAddress := r.ID().LocalAddress
+ 
+@@ -28,6 +29,16 @@ func UDP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 		}
+ 		natLock.Unlock()
+ 
++		// Egress policy. Returning true drops the datagram without creating
++		// an endpoint, so a refused destination simply goes nowhere.
++		if pol != nil {
++			ip := net.IP(localAddress.AsSlice())
++			if v := pol.AllowDial("udp", ip, r.ID().LocalPort); !v.Allowed {
++				log.Infof("policy: refused udp %s:%d (%s)", ip, r.ID().LocalPort, v.Reason)
++				return true
++			}
++		}
++
+ 		var wq waiter.Queue
+ 		ep, tcpErr := r.CreateEndpoint(&wq)
+ 		if tcpErr != nil {
+diff --git a/pkg/types/configuration.go b/pkg/types/configuration.go
+index 0e6a051..4ab28a3 100644
+--- a/pkg/types/configuration.go
++++ b/pkg/types/configuration.go
+@@ -5,10 +5,31 @@ import (
+ 	"regexp"
+ )
+ 
++// EgressPolicy is a default-deny allow/deny list applied to outbound
++// connections and to DNS resolution.
++//
++// When nil, the gateway behaves exactly as it always has: everything is
++// forwarded. When non-nil, nothing leaves the virtual network unless a rule
++// permits it.
++type EgressPolicy struct {
++	// Patterns permitting egress. An exact host, host:port, or a
++	// leading-label wildcard such as *.example.com.
++	Allow []string `yaml:"allow,omitempty"`
++
++	// Patterns refusing egress. Checked first; deny always wins.
++	Deny []string `yaml:"deny,omitempty"`
++
++	// Path to a JSONL file recording every decision. Empty disables it.
++	AuditLog string `yaml:"auditLog,omitempty"`
++}
++
+ type Configuration struct {
+ 	// Print packets on stderr
+ 	Debug bool `yaml:"debug,omitempty"`
+ 
++	// Default-deny egress policy. Nil means unrestricted (upstream default).
++	Policy *EgressPolicy `yaml:"policy,omitempty"`
++
+ 	// Record all packets coming in and out in a file that can be read by Wireshark (pcap)
+ 	CaptureFile string `yaml:"capture-file,omitempty"`
+ 
+diff --git a/pkg/virtualnetwork/services.go b/pkg/virtualnetwork/services.go
+index c7bc35c..f70b220 100644
+--- a/pkg/virtualnetwork/services.go
++++ b/pkg/virtualnetwork/services.go
+@@ -6,6 +6,7 @@ import (
+ 	"strings"
+ 	"sync"
+ 
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/services/dns"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/services/forwarder"
+@@ -25,14 +26,19 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+ 	var natLock sync.Mutex
+ 	translation := parseNATTable(configuration)
+ 
+-	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess)
++	pol, err := buildPolicy(configuration)
++	if err != nil {
++		return nil, err
++	}
++
++	tcpForwarder := forwarder.TCP(s, translation, &natLock, configuration.Ec2MetadataAccess, pol)
+ 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+-	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess)
++	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess, pol)
+ 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+ 	icmpForwarder := forwarder.ICMP(s, translation, &natLock)
+ 	s.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
+ 
+-	dnsMux, err := dnsServer(configuration, s)
++	dnsMux, err := dnsServer(configuration, s, pol)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -53,6 +59,19 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+ 	return mux, nil
+ }
+ 
++// buildPolicy returns nil when no policy is configured, which leaves the
++// gateway forwarding everything exactly as upstream does.
++func buildPolicy(configuration *types.Configuration) (*policy.Engine, error) {
++	if configuration.Policy == nil {
++		return nil, nil
++	}
++	return policy.NewEngine(
++		configuration.Policy.Allow,
++		configuration.Policy.Deny,
++		configuration.Policy.AuditLog,
++	)
++}
++
+ func parseNATTable(configuration *types.Configuration) map[tcpip.Address]tcpip.Address {
+ 	translation := make(map[tcpip.Address]tcpip.Address)
+ 	for source, destination := range configuration.NAT {
+@@ -61,7 +80,7 @@ func parseNATTable(configuration *types.Configuration) map[tcpip.Address]tcpip.A
+ 	return translation
+ }
+ 
+-func dnsServer(configuration *types.Configuration, s *stack.Stack) (http.Handler, error) {
++func dnsServer(configuration *types.Configuration, s *stack.Stack, pol *policy.Engine) (http.Handler, error) {
+ 	udpConn, err := gonet.DialUDP(s, &tcpip.FullAddress{
+ 		NIC:  1,
+ 		Addr: tcpip.AddrFrom4Slice(net.ParseIP(configuration.GatewayIP).To4()),
+@@ -80,7 +99,7 @@ func dnsServer(configuration *types.Configuration, s *stack.Stack) (http.Handler
+ 		return nil, err
+ 	}
+ 
+-	server, err := dns.New(udpConn, tcpLn, configuration.DNS)
++	server, err := dns.NewWithPolicy(udpConn, tcpLn, configuration.DNS, pol)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+-- 
+2.50.1 (Apple Git-155)
+

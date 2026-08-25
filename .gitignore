@@ -2,3 +2,4 @@
 .local/
 *.xcodeproj
 .DS_Store
+netstack/.work/

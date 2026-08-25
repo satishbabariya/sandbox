@@ -1,0 +1,70 @@
+{
+  "_comment": [
+    "Shared conformance vectors for the host-pattern matcher.",
+    "Two implementations must agree exactly: the Swift one in AirlockKit (advisory,",
+    "powers `airlock policy check`) and the Go one in the netstack fork (authoritative,",
+    "actually refuses the connection). A disagreement between them is a silent",
+    "correctness bug, so both test suites read this file.",
+    "Add a case here first, then make both sides pass it."
+  ],
+  "invalid": [
+    "",
+    "*",
+    "*.",
+    "*example.com",
+    "a.*.example.com",
+    "example.com:0",
+    "example.com:65536",
+    "example.com:notaport",
+    "http://example.com",
+    "example.com/path"
+  ],
+  "matches": [
+    { "pattern": "api.anthropic.com", "host": "api.anthropic.com", "port": 443, "expect": true },
+    { "pattern": "api.anthropic.com", "host": "api.anthropic.com", "port": 8080, "expect": true },
+    { "pattern": "api.anthropic.com", "host": "API.ANTHROPIC.COM", "port": 443, "expect": true },
+    { "pattern": "api.anthropic.com", "host": "api.anthropic.com.", "port": 443, "expect": true },
+    { "pattern": "api.anthropic.com", "host": "evil.com", "port": 443, "expect": false },
+    { "pattern": "api.anthropic.com", "host": "sub.api.anthropic.com", "port": 443, "expect": false },
+
+    { "pattern": "registry.example.com:5000", "host": "registry.example.com", "port": 5000, "expect": true },
+    { "pattern": "registry.example.com:5000", "host": "registry.example.com", "port": 443, "expect": false },
+
+    { "pattern": "*.githubusercontent.com", "host": "raw.githubusercontent.com", "port": 443, "expect": true },
+    { "pattern": "*.githubusercontent.com", "host": "githubusercontent.com", "port": 443, "expect": true },
+    { "pattern": "*.example.com", "host": "a.b.c.example.com", "port": 443, "expect": true },
+
+    { "pattern": "*.example.com", "host": "notexample.com", "port": 443, "expect": false },
+    { "pattern": "*.example.com", "host": "evilexample.com", "port": 443, "expect": false },
+    { "pattern": "*.example.com", "host": "example.com.evil.net", "port": 443, "expect": false },
+    { "pattern": "*.example.com", "host": "EXAMPLE.COM", "port": 443, "expect": true }
+  ],
+  "policies": [
+    {
+      "name": "empty policy denies everything",
+      "allow": [],
+      "deny": [],
+      "cases": [
+        { "host": "api.anthropic.com", "port": 443, "allowed": false }
+      ]
+    },
+    {
+      "name": "deny wins over a broader allow",
+      "allow": ["*.github.com"],
+      "deny": ["gist.github.com"],
+      "cases": [
+        { "host": "api.github.com", "port": 443, "allowed": true },
+        { "host": "gist.github.com", "port": 443, "allowed": false }
+      ]
+    },
+    {
+      "name": "unmatched falls through to deny",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "cases": [
+        { "host": "api.anthropic.com", "port": 443, "allowed": true },
+        { "host": "pypi.org", "port": 443, "allowed": false }
+      ]
+    }
+  ]
+}
