@@ -54,15 +54,15 @@ struct ExecCommand: AsyncParsableCommand {
             .exec(command: command, environment: environment, workingDirectory: workdir)
         ) { response in
             switch response {
-            case let .output(stream, base64):
+            case .output(let stream, let base64):
                 guard let data = Data(base64Encoded: base64) else { return true }
                 let handle: FileHandle = stream == .stdout ? .standardOutput : .standardError
                 try? handle.write(contentsOf: data)
                 return true
-            case let .exited(status):
+            case .exited(let status):
                 exitStatus = status
                 return false
-            case let .failure(message):
+            case .failure(let message):
                 failure = message
                 return false
             default:

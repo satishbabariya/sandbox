@@ -8,12 +8,12 @@ public enum SecretError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .keychain(status, operation):
+        case .keychain(let status, let operation):
             let message =
                 SecCopyErrorMessageString(status, nil) as String?
                 ?? "OSStatus \(status)"
             return "keychain \(operation) failed: \(message)"
-        case let .notFound(service):
+        case .notFound(let service):
             return "no secret stored for '\(service)'"
         case .invalidValue:
             return "secret value must be valid UTF-8"

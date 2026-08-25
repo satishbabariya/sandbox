@@ -63,11 +63,11 @@ public enum StoreError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .notFound(name):
+        case .notFound(let name):
             return "no sandbox named '\(name)'"
-        case let .alreadyExists(name):
+        case .alreadyExists(let name):
             return "a sandbox named '\(name)' already exists"
-        case let .invalidName(name):
+        case .invalidName(let name):
             return """
                 invalid sandbox name '\(name)': use lowercase letters, digits, \
                 '-' and '_', 1-64 characters

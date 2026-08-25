@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Swift build and test
+    # Apple silicon: airlock targets Virtualization.framework on arm64 and
+    # will not build on the Intel runners.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Show toolchain
+        run: swift --version && sw_vers
+
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      - name: Check formatting
+        run: |
+          swift format lint --recursive --strict Sources Tests \
+            || { echo "run: swift format --in-place --recursive Sources Tests"; exit 1; }
+
+  gateway:
+    name: Gateway build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      # Builds gvisor-tap-vsock at the pinned SHA with our patches, then runs
+      # the policy, broker, DNS, and forwarder suites. Also fails if the Swift
+      # and Go policy matchers have drifted apart.
+      - name: Apply patches and test
+        run: make -C netstack test
+
+  vectors:
+    name: Policy matcher conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Swift and Go matchers must agree
+        run: make -C netstack check-vectors
+
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck scripts/*.sh

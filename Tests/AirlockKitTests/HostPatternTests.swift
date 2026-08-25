@@ -32,18 +32,20 @@ struct HostPatternParsingTests {
         #expect(p.host == "api.anthropic.com")
     }
 
-    @Test("rejects malformed patterns", arguments: [
-        "",
-        "*",
-        "*.",
-        "*example.com",       // wildcard must be its own label
-        "a.*.example.com",    // wildcard only in leading position
-        "example.com:0",
-        "example.com:65536",
-        "example.com:notaport",
-        "http://example.com", // scheme is not part of a host pattern
-        "example.com/path",
-    ])
+    @Test(
+        "rejects malformed patterns",
+        arguments: [
+            "",
+            "*",
+            "*.",
+            "*example.com",  // wildcard must be its own label
+            "a.*.example.com",  // wildcard only in leading position
+            "example.com:0",
+            "example.com:65536",
+            "example.com:notaport",
+            "http://example.com",  // scheme is not part of a host pattern
+            "example.com/path",
+        ])
     func rejectsMalformed(_ raw: String) {
         #expect(throws: PolicyError.self) { try HostPattern(raw) }
     }

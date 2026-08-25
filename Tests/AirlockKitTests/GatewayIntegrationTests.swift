@@ -26,19 +26,19 @@ private func gvairlockBinary() -> URL? {
 enum DHCP {
     static func discover(mac: [UInt8], xid: UInt32) -> Data {
         var dhcp = Data()
-        dhcp.append(contentsOf: [1, 1, 6, 0])              // BOOTREQUEST, ethernet, hlen 6
+        dhcp.append(contentsOf: [1, 1, 6, 0])  // BOOTREQUEST, ethernet, hlen 6
         dhcp.append(contentsOf: xid.bigEndianBytes)
-        dhcp.append(contentsOf: [0, 0])                    // secs
-        dhcp.append(contentsOf: [0x80, 0x00])              // flags: broadcast
+        dhcp.append(contentsOf: [0, 0])  // secs
+        dhcp.append(contentsOf: [0x80, 0x00])  // flags: broadcast
         dhcp.append(contentsOf: [UInt8](repeating: 0, count: 16))  // ci/yi/si/gi addr
         dhcp.append(contentsOf: mac)
         dhcp.append(contentsOf: [UInt8](repeating: 0, count: 10))  // chaddr padding
         dhcp.append(contentsOf: [UInt8](repeating: 0, count: 64))  // sname
-        dhcp.append(contentsOf: [UInt8](repeating: 0, count: 128)) // file
+        dhcp.append(contentsOf: [UInt8](repeating: 0, count: 128))  // file
         dhcp.append(contentsOf: [0x63, 0x82, 0x53, 0x63])  // magic cookie
-        dhcp.append(contentsOf: [53, 1, 1])                // option 53: DHCPDISCOVER
-        dhcp.append(contentsOf: [55, 3, 1, 3, 6])          // params: mask, router, dns
-        dhcp.append(255)                                    // end
+        dhcp.append(contentsOf: [53, 1, 1])  // option 53: DHCPDISCOVER
+        dhcp.append(contentsOf: [55, 3, 1, 3, 6])  // params: mask, router, dns
+        dhcp.append(255)  // end
         return udpBroadcastFrame(payload: dhcp, mac: mac, srcPort: 68, dstPort: 67)
     }
 
@@ -58,8 +58,8 @@ enum DHCP {
         ip.append(contentsOf: UInt16(20 + udp.count).bigEndianBytes)
         ip.append(contentsOf: [0, 0, 0, 0, 64, 17])  // id, flags, ttl, proto=UDP
         let checksumOffset = ip.count
-        ip.append(contentsOf: [0, 0])                // checksum placeholder
-        ip.append(contentsOf: [0, 0, 0, 0])          // src 0.0.0.0
+        ip.append(contentsOf: [0, 0])  // checksum placeholder
+        ip.append(contentsOf: [0, 0, 0, 0])  // src 0.0.0.0
         ip.append(contentsOf: [255, 255, 255, 255])  // dst broadcast
         let sum = internetChecksum(ip)
         ip[checksumOffset] = UInt8(sum >> 8)
@@ -97,7 +97,10 @@ enum DHCP {
         while i < dhcp.endIndex {
             let code = dhcp[i]
             if code == 255 { return nil }
-            if code == 0 { i = dhcp.index(after: i); continue }
+            if code == 0 {
+                i = dhcp.index(after: i)
+                continue
+            }
             guard dhcp.index(after: i) < dhcp.endIndex else { return nil }
             let len = Int(dhcp[dhcp.index(after: i)])
             let valueStart = dhcp.index(i, offsetBy: 2)
@@ -202,8 +205,9 @@ struct GatewayIntegrationTests {
     @Test("the real gateway answers DHCP over GuestLink")
     func dhcpRoundTrip() throws {
         let audit = URL(filePath: "/tmp/al-audit-\(UInt32.random(in: 0..<9999)).jsonl")
-        guard let (proc, link, config) = try startGateway(
-            allow: ["*.anthropic.com"], deny: [], auditLog: audit)
+        guard
+            let (proc, link, config) = try startGateway(
+                allow: ["*.anthropic.com"], deny: [], auditLog: audit)
         else {
             Issue.record("gvairlock not built; run: make -C netstack")
             return
@@ -235,7 +239,8 @@ struct GatewayIntegrationTests {
         }
         let address = DHCP.offeredAddress(inFrame: offer)
         print("GATEWAY LEASED: \(address ?? "nil")")
-        #expect(address?.hasPrefix("192.168.127.") == true,
-                "expected a lease inside the configured subnet, got \(address ?? "nil")")
+        #expect(
+            address?.hasPrefix("192.168.127.") == true,
+            "expected a lease inside the configured subnet, got \(address ?? "nil")")
     }
 }

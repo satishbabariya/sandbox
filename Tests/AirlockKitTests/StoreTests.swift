@@ -77,10 +77,12 @@ struct SandboxStoreTests {
         #expect(store.list().map(\.name) == ["newer", "older"])
     }
 
-    @Test("rejects names that would escape the state directory", arguments: [
-        "", "../evil", "with/slash", "UPPER", "has space", "sym$link",
-        String(repeating: "x", count: 65),
-    ])
+    @Test(
+        "rejects names that would escape the state directory",
+        arguments: [
+            "", "../evil", "with/slash", "UPPER", "has space", "sym$link",
+            String(repeating: "x", count: 65),
+        ])
     func rejectsBadNames(_ name: String) {
         // Names become file paths and socket paths, so they are validated
         // rather than sanitised — a silently rewritten name is a confusing one.
@@ -122,7 +124,7 @@ struct ControlProtocolTests {
 
         let decoded = try ControlCodec.decode(
             ControlResponse.self, from: encoded.dropLast())
-        guard case let .output(stream, base64) = decoded else {
+        guard case .output(let stream, let base64) = decoded else {
             Issue.record("wrong case: \(decoded)")
             return
         }

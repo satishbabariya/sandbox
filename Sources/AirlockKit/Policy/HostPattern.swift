@@ -8,7 +8,7 @@ public enum PolicyError: Error, Equatable, CustomStringConvertible {
         switch self {
         case .emptyPattern:
             return "host pattern must not be empty"
-        case let .malformedPattern(raw, reason):
+        case .malformedPattern(let raw, let reason):
             return "invalid host pattern '\(raw)': \(reason)"
         }
     }

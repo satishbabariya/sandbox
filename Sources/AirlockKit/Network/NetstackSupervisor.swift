@@ -8,11 +8,11 @@ public enum NetstackError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .binaryNotFound(url):
+        case .binaryNotFound(let url):
             return "gvairlock not found at \(url.path); build it with: make -C netstack"
-        case let .didNotStart(detail):
+        case .didNotStart(let detail):
             return "gvairlock did not start: \(detail)"
-        case let .exitedEarly(code):
+        case .exitedEarly(let code):
             return "gvairlock exited with status \(code) before it was ready"
         }
     }

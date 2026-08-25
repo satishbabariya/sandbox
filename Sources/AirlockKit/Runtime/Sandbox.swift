@@ -1,6 +1,7 @@
 import Containerization
 import ContainerizationEXT4
 import ContainerizationOCI
+import Darwin
 import Foundation
 import Logging
 import SystemPackage
@@ -11,7 +12,7 @@ public enum SandboxError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .kernelNotFound(url):
+        case .kernelNotFound(let url):
             return """
                 no Linux kernel at \(url.path)
                 fetch one with: make kernel
@@ -34,6 +35,11 @@ public struct SandboxSpec: Sendable {
     public var memoryInBytes: UInt64
     public var workspace: URL?
     public var workspaceDestination: String
+    /// Extra host directories to share, beyond the workspace.
+    public var mounts: [MountSpec]
+    /// Use this prepared ext4 image as the rootfs instead of unpacking the
+    /// image fresh. Set by the agent cache.
+    public var preparedRootfs: URL?
     public var terminal: Bool
     /// Grant the guest process every Linux capability.
     ///
@@ -64,6 +70,8 @@ public struct SandboxSpec: Sendable {
         memoryInBytes: UInt64 = 4 * 1024 * 1024 * 1024,
         workspace: URL? = nil,
         workspaceDestination: String = "/workspace",
+        mounts: [MountSpec] = [],
+        preparedRootfs: URL? = nil,
         terminal: Bool = false,
         privileged: Bool = false,
         credentials: [CredentialBinding] = [],
@@ -81,6 +89,8 @@ public struct SandboxSpec: Sendable {
         self.memoryInBytes = memoryInBytes
         self.workspace = workspace
         self.workspaceDestination = workspaceDestination
+        self.mounts = mounts
+        self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.privileged = privileged
         self.credentials = credentials
@@ -99,7 +109,7 @@ public struct AirlockPaths: Sendable {
         self.root =
             root
             ?? FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: ".airlock")
+            .appending(path: ".airlock")
     }
 
     public var kernel: URL { root.appending(path: "vmlinux-arm64") }
@@ -214,11 +224,7 @@ public actor Sandbox {
         }
 
         let spec = self.spec
-        let container = try await mgr.create(
-            spec.id,
-            reference: spec.image,
-            networking: false  // airlock supplies the interface itself
-        ) { config in
+        let configure: (inout LinuxContainer.Configuration) throws -> Void = { config in
             config.cpus = spec.cpus
             config.memoryInBytes = spec.memoryInBytes
             config.interfaces = [interface]
@@ -285,6 +291,51 @@ public actor Sandbox {
                 )
                 config.process.workingDirectory = spec.workspaceDestination
             }
+
+            for mount in spec.mounts {
+                config.mounts.append(
+                    .share(
+                        source: mount.source.path(percentEncoded: false),
+                        destination: mount.destination,
+                        options: mount.readOnly ? ["ro"] : []
+                    ))
+            }
+        }
+
+        let container: LinuxContainer
+        if let prepared = spec.preparedRootfs {
+            // A prepared rootfs already has the agent installed; unpacking the
+            // base image again would throw that away.
+            let image = try await imageStore.get(reference: spec.image, pull: true)
+            let target = containerRoot.appending(path: "rootfs.ext4")
+            try FileManager.default.createDirectory(
+                at: containerRoot, withIntermediateDirectories: true)
+            try? FileManager.default.removeItem(at: target)
+            let cloned = clonefile(
+                prepared.path(percentEncoded: false),
+                target.path(percentEncoded: false), 0)
+            if cloned != 0 {
+                try FileManager.default.copyItem(at: prepared, to: target)
+            }
+            container = try await mgr.create(
+                spec.id,
+                image: image,
+                rootfs: .block(
+                    format: "ext4",
+                    source: target.path(percentEncoded: false),
+                    destination: "/",
+                    runtimeOptions: ["vzDiskImageSynchronizationMode=fsync"]
+                ),
+                networking: false,
+                configuration: configure
+            )
+        } else {
+            container = try await mgr.create(
+                spec.id,
+                reference: spec.image,
+                networking: false,  // airlock supplies the interface itself
+                configuration: configure
+            )
         }
         self.manager = mgr
         self.container = container

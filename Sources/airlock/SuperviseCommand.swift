@@ -1,6 +1,6 @@
-import Containerization
 import AirlockKit
 import ArgumentParser
+import Containerization
 import Darwin
 import Foundation
 
@@ -53,7 +53,7 @@ struct SuperviseCommand: AsyncParsableCommand {
 
         let server = ControlServer(path: socketPath) { request, client in
             switch request {
-            case let .exec(command, environment, workingDirectory):
+            case .exec(let command, let environment, let workingDirectory):
                 do {
                     let out = ClientWriter(fd: client, stream: .stdout)
                     let err = ClientWriter(fd: client, stream: .stderr)

@@ -11,11 +11,11 @@ public enum GuestLinkError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .socketFailed(op, err):
+        case .socketFailed(let op, let err):
             return "\(op) failed: \(String(cString: strerror(err))) (errno \(err))"
-        case let .pathTooLong(path):
+        case .pathTooLong(let path):
             return "socket path exceeds sun_path capacity: \(path)"
-        case let .invalidMACAddress(mac):
+        case .invalidMACAddress(let mac):
             return "invalid MAC address: \(mac)"
         }
     }
@@ -54,6 +54,8 @@ public final class GuestLink: @unchecked Sendable {
     /// - Parameters:
     ///   - gatewayPath: the gateway's `unixgram` socket.
     ///   - clientPath: where to bind our end. Must not already exist.
+    /// - Throws: ``GuestLinkError`` when the socket cannot be created, bound,
+    ///   or connected, or when either path exceeds `sun_path`.
     public init(gatewayPath: URL, clientPath: URL) throws {
         let fd = socket(AF_UNIX, SOCK_DGRAM, 0)
         guard fd >= 0 else {

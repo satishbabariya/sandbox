@@ -8,11 +8,11 @@ public enum ControlSocketError: Error, CustomStringConvertible {
 
     public var description: String {
         switch self {
-        case let .failed(op, err):
+        case .failed(let op, let err):
             return "\(op): \(String(cString: strerror(err)))"
-        case let .pathTooLong(path):
+        case .pathTooLong(let path):
             return "socket path too long: \(path)"
-        case let .notRunning(name):
+        case .notRunning(let name):
             return "sandbox '\(name)' is not running"
         }
     }

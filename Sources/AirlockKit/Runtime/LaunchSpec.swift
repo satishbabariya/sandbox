@@ -22,6 +22,12 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var secrets: [String]
     /// Give the sandbox its own dockerd.
     public var docker: Bool
+    /// Extra host:guest[:ro] mounts.
+    public var mounts: [String]
+    /// Prepared rootfs from the agent cache, if any.
+    public var preparedRootfs: String?
+    /// Agent this sandbox was launched from, for display.
+    public var agent: String?
 
     public init(
         name: String,
@@ -36,7 +42,10 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         workspaceDestination: String = "/workspace",
         privileged: Bool = false,
         secrets: [String] = [],
-        docker: Bool = false
+        docker: Bool = false,
+        mounts: [String] = [],
+        preparedRootfs: String? = nil,
+        agent: String? = nil
     ) {
         self.name = name
         self.image = image
@@ -51,6 +60,9 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.privileged = privileged
         self.secrets = secrets
         self.docker = docker
+        self.mounts = mounts
+        self.preparedRootfs = preparedRootfs
+        self.agent = agent
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -69,6 +81,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             cpus: cpus,
             memoryInBytes: memoryInBytes,
             workspaceDestination: workspaceDestination,
+            mounts: mounts.compactMap(MountSpec.parse),
+            preparedRootfs: preparedRootfs.map { URL(filePath: $0) },
             terminal: terminal,
             privileged: privileged,
             credentials: bindings,

@@ -16,8 +16,8 @@ struct RunCommand: AsyncParsableCommand {
             """
     )
 
-    @Argument(help: "Container image to run.")
-    var image: String
+    @Argument(help: "Agent name (see 'airlock agents ls') or a container image.")
+    var target: String
 
     @Argument(parsing: .postTerminator, help: "Command to run inside the sandbox, after --.")
     var command: [String] = []
@@ -37,8 +37,14 @@ struct RunCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Memory, e.g. 4g or 512m.")
     var memory: String = "4g"
 
-    @Option(name: .shortAndLong, help: "Host directory to mount at /workspace.")
+    @Option(name: .shortAndLong, help: "Host directory to mount at /workspace. Defaults to the current directory for agents.")
     var workspace: String?
+
+    @Option(name: .shortAndLong, help: "Extra mount, host:guest[:ro]; repeatable.")
+    var mount: [String] = []
+
+    @Flag(name: .long, help: "Rebuild the agent's cached environment before running.")
+    var rebuild: Bool = false
 
     @Flag(name: .long, help: "Print every policy decision when the sandbox exits.")
     var showPolicyLog: Bool = false
@@ -70,15 +76,33 @@ struct RunCommand: AsyncParsableCommand {
     var privileged: Bool = false
 
     func run() async throws {
-        let policy = try NetworkPolicy(allow: allow, deny: deny)
-        let id = name ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
-        try SandboxStore.validate(name: id)
-
         var command = self.command
         if command.first == "--" { command.removeFirst() }
 
         let paths = AirlockPaths()
         let store = SandboxStore(paths: paths)
+        let registry = AgentRegistry()
+        let gateway = InstallLayout.gatewayBinary()
+
+        // `airlock run claude` and `airlock run alpine:3.20` are both valid.
+        // The registry decides which this is, so a user-defined agent named
+        // after an image still wins.
+        let profile: AgentProfile? =
+            registry.isAgentName(target) ? try registry.profile(named: target) : nil
+
+        let image = profile?.image ?? target
+        let id =
+            name ?? profile.map { "\($0.name)-\(UInt32.random(in: 0..<0xFFFF))" }
+            ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
+        try SandboxStore.validate(name: id)
+
+        // A profile's rules are the floor; --allow adds to them.
+        var effectiveAllow = allow + (profile?.allow ?? [])
+        var effectiveSecrets = secret + (profile?.secrets ?? [])
+        var effectiveMounts = mount + (profile?.mounts ?? [])
+        if command.isEmpty, let profile { command = profile.command }
+
+        let policy = try NetworkPolicy(allow: effectiveAllow, deny: deny)
 
         if let existing = try? store.load(id), existing.state == .running {
             throw CleanExit.message(
@@ -87,8 +111,8 @@ struct RunCommand: AsyncParsableCommand {
 
         // A credential is useless if policy forbids reaching its domain, and
         // silently doing nothing would be baffling. Widen for bound domains.
-        var launchAllow = allow
-        for service in secret {
+        var launchAllow = effectiveAllow
+        for service in effectiveSecrets {
             guard let binding = CredentialBinding.preset(for: service) else {
                 throw ValidationError(
                     "no built-in binding for secret '\(service)'")
@@ -98,9 +122,29 @@ struct RunCommand: AsyncParsableCommand {
             }
         }
 
-        if policy.allow.isEmpty && secret.isEmpty {
+        if policy.allow.isEmpty && effectiveSecrets.isEmpty {
             FileHandle.standardError.write(
                 Data("airlock: no --allow rules; this sandbox reaches nothing\n".utf8))
+        }
+
+        // Install the agent once; later runs clone the cached filesystem.
+        var preparedRootfs: String?
+        if let profile, !profile.install.isEmpty {
+            let preparer = AgentPreparer(paths: paths)
+            let cache = RootfsCache(paths: paths)
+            if rebuild || !cache.isCached(profile) {
+                FileHandle.standardError.write(
+                    Data("airlock: preparing '\(profile.name)' (first run only)\n".utf8))
+            }
+            let rootfs = try await preparer.prepare(
+                profile, gatewayBinary: gateway, force: rebuild
+            ) { progress in
+                if case .installing(let step, let total, let cmd) = progress {
+                    FileHandle.standardError.write(
+                        Data("  [\(step)/\(total)] \(cmd.prefix(70))\n".utf8))
+                }
+            }
+            preparedRootfs = rootfs.path(percentEncoded: false)
         }
 
         var launch = LaunchSpec(
@@ -112,12 +156,20 @@ struct RunCommand: AsyncParsableCommand {
             cpus: cpus,
             memoryInBytes: try Self.parseMemory(memory),
             privileged: privileged || docker,
-            secrets: secret,
-            docker: docker
+            secrets: effectiveSecrets,
+            docker: docker || (profile?.docker ?? false),
+            mounts: effectiveMounts,
+            preparedRootfs: preparedRootfs,
+            agent: profile?.name
         )
+        launch.environment = profile?.environment ?? [:]
+        // An agent with no explicit workspace should see the directory the
+        // user is standing in — that is what they mean by running it here.
         if let workspace {
             launch.workspace = URL(filePath: workspace).standardizedFileURL
                 .path(percentEncoded: false)
+        } else if profile != nil {
+            launch.workspace = FileManager.default.currentDirectoryPath
         }
 
         if detach {
@@ -129,7 +181,6 @@ struct RunCommand: AsyncParsableCommand {
         var spec = try launch.sandboxSpec()
         spec.terminal = false
         let sandbox = Sandbox(spec: spec, paths: paths)
-        let gateway = InstallLayout.gatewayBinary()
 
         // Only a sandbox the user can refer to later earns a record. An
         // auto-named foreground run is ephemeral, and persisting it would

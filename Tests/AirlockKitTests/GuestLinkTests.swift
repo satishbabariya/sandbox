@@ -53,8 +53,9 @@ final class FakeGateway {
         let n = payload.withUnsafeBytes { raw in
             withUnsafePointer(to: &peer) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    sendto(fd, raw.baseAddress, raw.count, 0, $0,
-                           socklen_t(MemoryLayout<sockaddr_un>.size))
+                    sendto(
+                        fd, raw.baseAddress, raw.count, 0, $0,
+                        socklen_t(MemoryLayout<sockaddr_un>.size))
                 }
             }
         }

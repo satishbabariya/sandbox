@@ -10,7 +10,8 @@ struct Airlock: AsyncParsableCommand {
         subcommands: [
             RunCommand.self, ExecCommand.self, ListCommand.self,
             StopCommand.self, RemoveCommand.self, LogsCommand.self, PruneCommand.self,
-            PolicyCommand.self, SecretCommand.self, SuperviseCommand.self,
+            PolicyCommand.self, SecretCommand.self, AgentsCommand.self,
+            SuperviseCommand.self,
         ]
     )
 }
@@ -60,15 +61,15 @@ enum SplitTarget {
 
 extension PolicyDecision {
     func render(host: String, port: UInt16?) -> String {
-        let where_ = port.map { "\(host):\($0)" } ?? host
+        let target = port.map { "\(host):\($0)" } ?? host
         switch self {
-        case let .allowed(by):
-            return "allow  \(where_)  (matched allow '\(by)')"
-        case let .denied(by):
+        case .allowed(let by):
+            return "allow  \(target)  (matched allow '\(by)')"
+        case .denied(let by):
             if let by {
-                return "deny   \(where_)  (matched deny '\(by)')"
+                return "deny   \(target)  (matched deny '\(by)')"
             }
-            return "deny   \(where_)  (no allow rule matched)"
+            return "deny   \(target)  (no allow rule matched)"
         }
     }
 }
