@@ -285,7 +285,11 @@ allow tcp 104.20.23.154:80 allow-rule example.com
 
 # Why was that blocked?
 $ airlock policy log my-sandbox --denied
-2026-08-26 06:21:27  deny  tcp 172.66.147.243:443  sni-denied  [blocked.example.net]
+2026-08-26 07:38:15  deny  dns www.iana.org           no-allow-rule
+2026-08-26 06:21:27  deny  tcp 172.66.147.243:443     sni-denied  [blocked.example.net]
+
+# Live view of every sandbox and its decisions
+$ airlock top
 
 # Watch decisions as they happen
 $ airlock policy log my-sandbox --follow
@@ -433,7 +437,7 @@ disagreed with the enforcement point would be worse than no CLI.
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
 file, templates and snapshots, Docker kit import and mixin composition,
-interactive terminals, `policy log`, `doctor`, `kernel install`.
+interactive terminals, `policy log`, `top`, `doctor`, `kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
 interception), dynamic filesystem approval (`VZHotplugProvider`),

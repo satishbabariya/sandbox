@@ -99,12 +99,25 @@ struct PolicyLogCommand: AsyncParsableCommand {
     static func format(_ record: PolicyAuditRecord) -> String {
         let verdict = record.allowed ? "allow" : "deny "
         let time = String(record.time.prefix(19)).replacingOccurrences(of: "T", with: " ")
-        let target = "\(record.address):\(record.port)"
+        let names = (record.names ?? []).map {
+            $0.hasSuffix(".") ? String($0.dropLast()) : $0
+        }
+
+        // A DNS decision has no address by definition — the point is that no
+        // name was resolved — so showing ":0" would read as a bug.
+        let target: String
+        if record.proto == "dns" {
+            target = names.first ?? "(unknown)"
+        } else {
+            target = "\(record.address):\(record.port)"
+        }
+
         var line = "\(time)  \(verdict) \(record.proto) \(target)  \(record.reason)"
         if let rule = record.rule, !rule.isEmpty {
             line += " '\(rule)'"
         }
-        if let names = record.names, !names.isEmpty {
+        // For DNS the name is already the target; repeating it adds nothing.
+        if record.proto != "dns", !names.isEmpty {
             line += "  [\(names.joined(separator: ", "))]"
         }
         return line

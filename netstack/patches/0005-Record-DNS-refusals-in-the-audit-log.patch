@@ -1,0 +1,65 @@
+From fe350060fec1a05dd20909da20d41be9bb94c504 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Wed, 26 Aug 2026 13:06:37 +0530
+Subject: [PATCH 5/5] Record DNS refusals in the audit log
+
+---
+ pkg/policy/engine.go    | 17 ++++++++++++++++-
+ pkg/services/dns/dns.go |  3 +++
+ 2 files changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/pkg/policy/engine.go b/pkg/policy/engine.go
+index cd0e7a0..f1661d2 100644
+--- a/pkg/policy/engine.go
++++ b/pkg/policy/engine.go
+@@ -273,6 +273,17 @@ func (e *Engine) AllowSNI(name string, port uint16) Verdict {
+ 	return v
+ }
+ 
++// RecordName writes a name-resolution decision to the audit log.
++//
++// A refusal at DNS is the most common kind, and until it was recorded
++// "airlock policy log" had nothing to show for the case users hit most: a host
++// that was never allowed at all. There is no address to report, because the
++// point is that we never resolved one.
++func (e *Engine) RecordName(name string, v Verdict) {
++	v.Names = []string{name}
++	e.record("dns", nil, 0, v)
++}
++
+ // RecordSNI writes an SNI decision to the audit log.
+ func (e *Engine) RecordSNI(proto string, ip net.IP, port uint16, v Verdict) {
+ 	e.record(proto, ip, port, v)
+@@ -306,10 +317,14 @@ func (e *Engine) record(proto string, ip net.IP, port uint16, v Verdict) {
+ 	if e.audit == nil {
+ 		return
+ 	}
++	address := ""
++	if ip != nil {
++		address = ip.String()
++	}
+ 	rec := auditRecord{
+ 		Time:    e.now().UTC().Format(time.RFC3339Nano),
+ 		Proto:   proto,
+-		Address: ip.String(),
++		Address: address,
+ 		Port:    port,
+ 		Allowed: v.Allowed,
+ 		Rule:    v.Rule,
+diff --git a/pkg/services/dns/dns.go b/pkg/services/dns/dns.go
+index 1316dea..810cffe 100644
+--- a/pkg/services/dns/dns.go
++++ b/pkg/services/dns/dns.go
+@@ -133,6 +133,9 @@ func (h *dnsHandler) addAnswers(m *dns.Msg) {
+ 		if h.policy != nil {
+ 			if v := h.policy.AllowName(q.Name); !v.Allowed {
+ 				log.Infof("policy: refused dns %s (%s)", q.Name, v.Reason)
++				// Record it: a name that was never allowed is the commonest
++				// refusal, and without this the audit log is silent about it.
++				h.policy.RecordName(q.Name, v)
+ 				m.Rcode = dns.RcodeRefused
+ 				return
+ 			}
+-- 
+2.50.1 (Apple Git-155)
+

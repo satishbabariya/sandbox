@@ -210,6 +210,24 @@ check "guest can write its copy" "guest-overwrote" "$(cat /tmp/airlock-copy.log)
 check "host file is untouched" "^$BEFORE$" "$(shasum -a 256 "$STAGE/config.json" | cut -d' ' -f1)"
 rm -rf "$STAGE" /tmp/airlock-copy.log
 
+echo "== the audit log explains refusals =="
+
+# A refusal at DNS is the commonest kind, and until it was recorded the log had
+# nothing to show for exactly the case users hit most.
+"$B" rm audit-box --force >/dev/null 2>&1
+"$B" run "$CLONE_IMAGE" --name audit-box -d --no-tty --allow example.com -- \
+  /bin/sh -c 'while true; do sleep 3600; done' >/dev/null 2>&1
+sleep 4
+"$B" exec audit-box --no-tty -- /bin/sh -c \
+  'curl -s -m 6 -o /dev/null https://www.iana.org; curl -s -m 8 -o /dev/null https://example.com' \
+  >/dev/null 2>&1
+LOG=$("$B" policy log audit-box 2>&1)
+check "a DNS refusal is recorded with its name" "deny  dns www.iana.org" "$LOG"
+check "an allowed dial names the rule" "allow-rule 'example.com'" "$LOG"
+check "--denied filters to refusals" "^$" \
+  "$("$B" policy log audit-box --denied 2>&1 | grep -c 'allow ' | grep -v '^0$')"
+"$B" rm audit-box --force >/dev/null 2>&1
+
 echo "== sandbox isolation =="
 
 # Every sandbox gets the same private subnet, so the question is whether two of
