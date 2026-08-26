@@ -143,7 +143,10 @@ struct RunCommand: AsyncParsableCommand {
         let profile: AgentProfile? =
             registry.isAgentName(target) ? try registry.profile(named: target) : nil
 
-        let image = profile?.image ?? target
+        // Expanded here rather than at every use, so a bare `alpine:3.20` and
+        // a kit's `docker/sandbox-templates:shell` both reach the image store
+        // in the form it requires.
+        let image = ImageReference.normalised(profile?.image ?? target)
         let id =
             name ?? profile.map { "\($0.name)-\(UInt32.random(in: 0..<0xFFFF))" }
             ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
@@ -201,12 +204,22 @@ struct RunCommand: AsyncParsableCommand {
         // A credential is useless if policy forbids reaching its domain, and
         // silently doing nothing would be baffling. Widen for bound domains.
         var launchAllow = effectiveAllow
+        let profileBindings = profile?.bindings ?? []
         for service in effectiveSecrets {
-            guard let binding = CredentialBinding.preset(for: service) else {
+            // A profile imported from a kit brings its own bindings, which can
+            // describe a service airlock has no preset for and can name more
+            // than one domain.
+            let supplied = profileBindings.filter { $0.service == service }
+            let resolved =
+                supplied.isEmpty
+                ? CredentialBinding.preset(for: service).map { [$0] } ?? []
+                : supplied
+            guard !resolved.isEmpty else {
                 throw ValidationError(
-                    "no built-in binding for secret '\(service)'")
+                    "no binding for secret '\(service)'; airlock has no preset for it "
+                        + "and no profile supplied one")
             }
-            if !launchAllow.contains(binding.domain) {
+            for binding in resolved where !launchAllow.contains(binding.domain) {
                 launchAllow.append(binding.domain)
             }
         }
@@ -282,6 +295,7 @@ struct RunCommand: AsyncParsableCommand {
         launch.files = profile?.files ?? []
         launch.startup = profile?.startup ?? []
         launch.agentInstructions = profile?.agentInstructions
+        launch.extraBindings = profileBindings
         // An agent with no explicit workspace should see the directory the
         // user is standing in — that is what they mean by running it here.
         if let workspace {

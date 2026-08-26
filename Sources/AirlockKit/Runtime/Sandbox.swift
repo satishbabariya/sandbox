@@ -112,7 +112,10 @@ public struct SandboxSpec: Sendable {
         stderr: (any Writer)? = nil
     ) {
         self.id = id
-        self.image = image
+        // Normalised on the way in, so every caller -- run, supervise, a test
+        // constructing a spec directly -- reaches the image store with a
+        // reference it accepts.
+        self.image = ImageReference.normalised(image)
         self.command = command
         self.environment = environment
         self.policy = policy

@@ -53,7 +53,8 @@ public actor AgentPreparer {
         }
 
         let buildID = "build-\(profile.name)-\(UInt32.random(in: 0..<0xFFFF))"
-        onProgress(.pulling(profile.image))
+        let reference = ImageReference.normalised(profile.image)
+        onProgress(.pulling(reference))
 
         // Install steps need the agent's own egress, and its package
         // registries, but nothing beyond that.
@@ -73,7 +74,7 @@ public actor AgentPreparer {
 
         let spec = SandboxSpec(
             id: buildID,
-            image: profile.image,
+            image: reference,
             command: ["/bin/sh", "-lc", script],
             policy: policy,
             cpus: 4,

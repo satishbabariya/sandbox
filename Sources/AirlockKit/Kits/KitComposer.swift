@@ -120,6 +120,14 @@ public enum KitComposer {
             }
         }
 
+        // A binding is keyed by service and domain together, because one
+        // service legitimately has several domains.
+        var seenBinding = Set(base.bindings.map { "\($0.service)|\($0.domain)" })
+        for binding in layer.bindings
+        where seenBinding.insert("\(binding.service)|\(binding.domain)").inserted {
+            merged.bindings.append(binding)
+        }
+
         // Later wins, as for environment: a mixin layered on top is the more
         // specific statement about what the agent should be told.
         if let instructions = layer.agentInstructions {

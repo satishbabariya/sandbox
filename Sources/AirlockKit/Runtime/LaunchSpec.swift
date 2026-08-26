@@ -20,6 +20,9 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var privileged: Bool
     /// Services whose credentials the broker should inject.
     public var secrets: [String]
+    /// Bindings supplied by a profile, which take precedence over the presets
+    /// and may name more than one domain for a service.
+    public var extraBindings: [CredentialBinding] = []
     /// Give the sandbox its own dockerd.
     public var docker: Bool
     /// Extra host:guest[:ro] mounts.
@@ -131,8 +134,16 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
 
     /// Resolve service names to bindings, ignoring any without a known one —
     /// storing a secret with no binding should not stop a sandbox starting.
+    ///
+    /// A profile's own bindings win over the presets and may name several
+    /// domains for one service, which is how a kit describes a credential
+    /// valid across a set of regional endpoints.
     public var bindings: [CredentialBinding] {
-        secrets.compactMap { CredentialBinding.preset(for: $0) }
+        secrets.flatMap { service -> [CredentialBinding] in
+            let supplied = extraBindings.filter { $0.service == service }
+            if !supplied.isEmpty { return supplied }
+            return CredentialBinding.preset(for: service).map { [$0] } ?? []
+        }
     }
 
     public var record: SandboxRecord {

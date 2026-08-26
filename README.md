@@ -70,7 +70,7 @@ same IP.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 74 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 77 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -347,6 +347,11 @@ translate and all 20 mixins compose onto one**, with no parse errors. Across
 that corpus **4 declarations are reported as unhonoured**, and all four are the
 same thing: an OAuth flow. airlock reuses a sign-in already on the host but
 does not perform the flow itself.
+
+Credentials are taken from what the kit declares, not from a list airlock ships
+— a kit states the environment variable, domain, header and format for each
+one, which is enough to broker a service airlock has never heard of, across as
+many domains as the credential is valid for.
 
 Everything else translates: `permissions.network`, `credentials` with a
 binding, `environment`, `setup.install`, `setup.files` (written at the declared

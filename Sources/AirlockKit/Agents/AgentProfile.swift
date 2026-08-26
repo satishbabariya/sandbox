@@ -98,6 +98,14 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     public var allow: [String]
     /// Credential services to broker.
     public var secrets: [String]
+    /// Bindings for services airlock has no preset for, or that need more than
+    /// one domain.
+    ///
+    /// A kit states the environment variable, domain, header and format for
+    /// every credential it uses, so it can describe a service airlock has
+    /// never heard of. Without this, importing such a kit silently produced an
+    /// agent with no credential at all.
+    public var bindings: [CredentialBinding]
     /// Host paths mounted into the guest, as "host:guest" or "host:guest:ro".
     /// Tilde is expanded.
     ///
@@ -152,7 +160,8 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         runAsUser: String? = nil,
         files: [GuestFile] = [],
         startup: [StartupCommand] = [],
-        agentInstructions: AgentInstructions? = nil
+        agentInstructions: AgentInstructions? = nil,
+        bindings: [CredentialBinding] = []
     ) {
         self.name = name
         self.displayName = displayName
@@ -170,6 +179,7 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         self.files = files
         self.startup = startup
         self.agentInstructions = agentInstructions
+        self.bindings = bindings
     }
 
     /// Decoded field by field with defaults rather than by the synthesised
@@ -197,6 +207,7 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         startup = try c.decodeIfPresent([StartupCommand].self, forKey: .startup) ?? []
         agentInstructions = try c.decodeIfPresent(
             AgentInstructions.self, forKey: .agentInstructions)
+        bindings = try c.decodeIfPresent([CredentialBinding].self, forKey: .bindings) ?? []
     }
 
     /// Everything the sandbox must be able to reach: the agent's own rules plus

@@ -486,6 +486,20 @@ check "a detached sandbox's stdout is kept" "ON_STDOUT" "$out"
 check "and its stderr with it" "ON_STDERR" "$out"
 $B rm logcase --force >/dev/null 2>&1
 
+echo "== image references are spelled the way everyone spells them =="
+
+# Every other container tool takes alpine:3.20, and so does every kit: 14 of
+# the 21 sandbox kits in docker/sbx-kits-contrib name their image without a
+# registry. Rejecting that reads as the image being wrong, not the spelling.
+out=$($B run alpine:3.20 --no-tty -- /bin/sh -c 'echo BARE_REFERENCE_RAN' 2>&1)
+check "a bare Docker Hub reference runs" "BARE_REFERENCE_RAN" "$out"
+check_absent "and is not rejected as a bad domain" "invalid domain" "$out"
+
+# A reference that already names a registry must be left alone, or a private
+# registry would silently become Docker Hub.
+out=$($B run "$IMAGE" --no-tty -- /bin/sh -c 'echo QUALIFIED_RAN' 2>&1)
+check "a fully qualified reference still runs" "QUALIFIED_RAN" "$out"
+
 echo "== kit instructions reach a clone, never your tree =="
 
 rm -f "$AGENTS_DIR/acceptinstr.json"

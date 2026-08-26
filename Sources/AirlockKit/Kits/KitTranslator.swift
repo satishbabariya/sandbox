@@ -58,6 +58,7 @@ public enum KitTranslator {
 
         // Credentials: only the API-key-into-a-header shape maps.
         var secrets: [String] = []
+        var bindings: [CredentialBinding] = []
         for credential in spec.credentials ?? [] {
             if let oauth = credential.oauth {
                 let endpoint = oauth.tokenEndpoint?.description ?? "an OAuth provider"
@@ -71,18 +72,27 @@ public enum KitTranslator {
                     "credentials[\(credential.service)] has no inject rule and was skipped")
                 continue
             }
-            if CredentialBinding.preset(for: credential.service) == nil {
+            // The kit states the domain, header and format for every
+            // credential it uses, so it can describe a service airlock has no
+            // preset for -- and can name several domains for one credential,
+            // which is how a regional API is expressed. Both are taken from
+            // the kit rather than refused.
+            let declared = inject.compactMap { rule -> CredentialBinding? in
+                guard let header = Self.header(for: rule) else { return nil }
+                return CredentialBinding(
+                    service: credential.service,
+                    domain: rule.domain,
+                    header: header,
+                    format: Self.format(for: rule))
+            }
+            guard !declared.isEmpty else {
                 notes.append(
-                    "credentials[\(credential.service)] has no airlock binding; "
-                        + "it will not be injected")
+                    "credentials[\(credential.service)] declares no header or scheme "
+                        + "to inject with; it will not be injected")
                 continue
             }
             secrets.append(credential.service)
-            if inject.count > 1 {
-                notes.append(
-                    "credentials[\(credential.service)] injects into \(inject.count) domains; "
-                        + "airlock's binding covers one")
-            }
+            bindings.append(contentsOf: declared)
         }
 
         // Install steps. `user` is dropped: airlock runs the prepare sandbox as
@@ -148,10 +158,31 @@ public enum KitTranslator {
             docker: spec.security?.privileged ?? false,
             files: files,
             startup: startup,
-            agentInstructions: instructions
+            agentInstructions: instructions,
+            bindings: bindings
         )
 
         return KitTranslation(profile: profile, notes: notes, unsupported: unsupported)
+    }
+}
+
+extension KitTranslator {
+    /// The header a rule injects into. `scheme` is sugar for the Authorization
+    /// header, which is how most kits express a bearer token.
+    static func header(for rule: KitSpec.Credential.APIKey.Inject) -> String? {
+        if let header = rule.header, !header.isEmpty { return header }
+        if let scheme = rule.scheme, !scheme.isEmpty { return "authorization" }
+        return nil
+    }
+
+    /// A kit writes the value template with `%s`; airlock writes it with `{}`.
+    /// A rule that gives only a scheme means "<scheme> <secret>".
+    static func format(for rule: KitSpec.Credential.APIKey.Inject) -> String {
+        if let format = rule.format, !format.isEmpty {
+            return format.replacingOccurrences(of: "%s", with: "{}")
+        }
+        if let scheme = rule.scheme, !scheme.isEmpty { return "\(scheme) {}" }
+        return "{}"
     }
 }
 
