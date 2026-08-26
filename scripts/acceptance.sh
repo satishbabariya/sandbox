@@ -68,6 +68,21 @@ out=$($B run "$IMAGE" --privileged --allow '*.anthropic.com' -- /bin/sh -c \
    wget -T 8 -q -O /dev/null http://$IP && echo ESCAPED || echo BLOCKED" 2>&1)
 check "privileged root cannot escape" "BLOCKED" "$out"
 
+echo "== SNI inspection =="
+
+# The case the resolution ledger cannot decide: one address, two names. The
+# dial check must permit it — an allowed name really does live there — so only
+# the ClientHello can refuse the connection.
+out=$($B run "$CLONE_IMAGE" --no-tty --allow example.com -- /bin/sh -c '
+  IP=$(getent hosts example.com | head -1 | cut -d" " -f1)
+  curl -s -m 12 -o /dev/null https://example.com && echo CONTROL_REACHED || echo CONTROL_BLOCKED
+  curl -s -m 12 -o /dev/null --resolve "evil.example.org:443:$IP" https://evil.example.org/ \
+    && echo ATTACK_REACHED || echo ATTACK_BLOCKED' 2>&1)
+# Without the control this would pass even if the gateway had simply crashed,
+# which is exactly how an earlier version of it lied.
+check "control: TLS to the allowed name works" "CONTROL_REACHED" "$out"
+check "vouched address with a different SNI is refused" "ATTACK_BLOCKED" "$out"
+
 echo "== workspace =="
 
 WORK=$(mktemp -d)

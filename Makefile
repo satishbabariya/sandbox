@@ -20,7 +20,7 @@ KATA_KERNEL := vmlinux-6.12.28-153
 all: build
 
 .PHONY: build
-build: $(GATEWAY) sign
+build: gateway sign
 
 .PHONY: cli
 cli:
@@ -39,9 +39,10 @@ sign: cli
 	  && echo "  com.apple.security.virtualization present" \
 	  || { echo "  ERROR: entitlement missing"; exit 1; }
 
-$(GATEWAY):
-	@$(MAKE) -C netstack
-
+# Must be phony and always recursed into. As a file target with no
+# prerequisites, make would consider an existing binary up to date and never
+# notice that the patches under netstack/ had changed — which silently shipped
+# a stale gateway.
 .PHONY: gateway
 gateway:
 	@$(MAKE) -C netstack

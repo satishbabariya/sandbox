@@ -1,0 +1,646 @@
+From da24ab919a5e5659b61e454bc3a95adf59fe9ba7 Mon Sep 17 00:00:00 2001
+From: Satish Babariya <themadengineer99@gmail.com>
+Date: Wed, 26 Aug 2026 10:11:32 +0530
+Subject: [PATCH 3/3] Inspect SNI so policy is exact on shared addresses
+
+The resolution ledger says which names an address was handed out for. That is
+enough to refuse an address we never vouched for, but not enough to be precise
+on a shared one: a CDN address may serve both an allowed name and an unrelated
+one, and the dial check cannot tell which a connection wants.
+
+The ClientHello can, and it is sent in the clear, so this needs no
+interception, no certificate, and no key. The bytes are peeked and replayed
+verbatim; nothing is decrypted.
+
+pkg/sni parses the record with every length checked against the buffer, since
+it is reading bytes the sandbox chose. Tests build real ClientHellos with the
+standard library rather than fixtures, and cover truncation and malformed
+records for panics.
+
+SNI now classifies port 443 before the broker, since knowing the exact name is
+what decides whether a credential is bound to it. A prefixConn replays the
+peeked handshake into the broker's TLS server so its handshake sees the stream
+from the start.
+---
+ pkg/policy/engine.go          |  37 ++++++++
+ pkg/policy/sni_shared_test.go |  59 ++++++++++++
+ pkg/services/forwarder/tcp.go | 136 ++++++++++++++++++++-------
+ pkg/sni/sni.go                | 168 ++++++++++++++++++++++++++++++++++
+ pkg/sni/sni_test.go           | 136 +++++++++++++++++++++++++++
+ 5 files changed, 504 insertions(+), 32 deletions(-)
+ create mode 100644 pkg/policy/sni_shared_test.go
+ create mode 100644 pkg/sni/sni.go
+ create mode 100644 pkg/sni/sni_test.go
+
+diff --git a/pkg/policy/engine.go b/pkg/policy/engine.go
+index ebad9a5..cd0e7a0 100644
+--- a/pkg/policy/engine.go
++++ b/pkg/policy/engine.go
+@@ -22,6 +22,7 @@ type Verdict struct {
+ 
+ const (
+ 	ReasonAllowRule    = "allow-rule"
++	ReasonSNIDenied    = "sni-denied"
+ 	ReasonDenyRule     = "deny-rule"
+ 	ReasonNoAllowRule  = "no-allow-rule"
+ 	ReasonUnresolvedIP = "unresolved-address"
+@@ -252,6 +253,42 @@ func (e *Engine) allowDial(ip net.IP, port uint16) Verdict {
+ 	return Verdict{Allowed: false, Reason: ReasonNoAllowRule, Names: names}
+ }
+ 
++// AllowSNI re-evaluates a connection against the hostname its TLS ClientHello
++// actually asked for.
++//
++// The ledger can only say which names an address was handed out for. On a
++// shared CDN address that may include names policy does not allow, and the
++// dial check has no way to tell which one this connection wants. The
++// ClientHello does, in the clear, so checking it turns "some allowed name lives
++// here" into "this connection is for an allowed name".
++func (e *Engine) AllowSNI(name string, port uint16) Verdict {
++	e.mu.RLock()
++	defer e.mu.RUnlock()
++
++	v := e.evaluate(normalizeHost(name), port)
++	if !v.Allowed && v.Reason == ReasonNoAllowRule {
++		v.Reason = ReasonSNIDenied
++	}
++	v.Names = []string{name}
++	return v
++}
++
++// RecordSNI writes an SNI decision to the audit log.
++func (e *Engine) RecordSNI(proto string, ip net.IP, port uint16, v Verdict) {
++	e.record(proto, ip, port, v)
++}
++
++// HasRules reports whether any policy is configured. With none, SNI inspection
++// is pointless work on every connection.
++func (e *Engine) HasRules() bool {
++	if e == nil {
++		return false
++	}
++	e.mu.RLock()
++	defer e.mu.RUnlock()
++	return len(e.allow) > 0 || len(e.deny) > 0
++}
++
+ type auditRecord struct {
+ 	Time    string   `json:"time"`
+ 	Proto   string   `json:"proto"`
+diff --git a/pkg/policy/sni_shared_test.go b/pkg/policy/sni_shared_test.go
+new file mode 100644
+index 0000000..fdb94e0
+--- /dev/null
++++ b/pkg/policy/sni_shared_test.go
+@@ -0,0 +1,59 @@
++package policy
++
++import (
++	"net"
++	"testing"
++	"time"
++)
++
++// The case SNI exists for: one address, two names, one of them not allowed.
++// The dial check can only see the address, so it must permit the connection —
++// an allowed name does live there. Only the ClientHello says which name this
++// particular connection wants.
++func TestSNIDistinguishesNamesOnASharedAddress(t *testing.T) {
++	e, err := NewEngine([]string{"allowed.example.com"}, nil, "")
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++
++	shared := net.ParseIP("104.20.1.1")
++	e.NoteResolution("allowed.example.com", []net.IP{shared}, time.Minute)
++
++	// The address is dialable, because a name we allow resolves to it.
++	if v := e.AllowDial("tcp", shared, 443); !v.Allowed {
++		t.Fatalf("shared address should be dialable, got %+v", v)
++	}
++
++	// But a connection asking for a different name on it must be refused.
++	if v := e.AllowSNI("notallowed.example.com", 443); v.Allowed {
++		t.Error("SNI for an unallowed name must be refused")
++	}
++	if v := e.AllowSNI("allowed.example.com", 443); !v.Allowed {
++		t.Error("SNI for the allowed name must pass")
++	}
++}
++
++func TestSNIRespectsDeny(t *testing.T) {
++	e, _ := NewEngine([]string{"*.github.com"}, []string{"gist.github.com"}, "")
++	if v := e.AllowSNI("gist.github.com", 443); v.Allowed {
++		t.Error("deny must win at the SNI check too")
++	}
++	if v := e.AllowSNI("api.github.com", 443); !v.Allowed {
++		t.Error("an allowed name must still pass")
++	}
++}
++
++func TestHasRulesGatesTheWork(t *testing.T) {
++	empty, _ := NewEngine(nil, nil, "")
++	if empty.HasRules() {
++		t.Error("an empty policy has no rules")
++	}
++	withRules, _ := NewEngine([]string{"example.com"}, nil, "")
++	if !withRules.HasRules() {
++		t.Error("a configured policy has rules")
++	}
++	var nilEngine *Engine
++	if nilEngine.HasRules() {
++		t.Error("a nil engine must report no rules rather than panicking")
++	}
++}
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index 36227a7..9432635 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -8,6 +8,7 @@ import (
+ 
+ 	"github.com/containers/gvisor-tap-vsock/pkg/broker"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/policy"
++	"github.com/containers/gvisor-tap-vsock/pkg/sni"
+ 	"github.com/inetaf/tcpproxy"
+ 	log "github.com/sirupsen/logrus"
+ 	"gvisor.dev/gvisor/pkg/tcpip"
+@@ -38,41 +39,35 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 		// evaluated against the address we are actually about to dial.
+ 		// r.Complete(true) sends a RST, so the guest sees a refused
+ 		// connection rather than a silent hang.
+-		var vouchedNames []string
+ 		if pol != nil {
+ 			ip := net.IP(localAddress.AsSlice())
+-			v := pol.AllowDial("tcp", ip, r.ID().LocalPort)
+-			if !v.Allowed {
++			if v := pol.AllowDial("tcp", ip, r.ID().LocalPort); !v.Allowed {
+ 				log.Infof("policy: refused tcp %s:%d (%s)", ip, r.ID().LocalPort, v.Reason)
+ 				r.Complete(true)
+ 				return
+ 			}
+-			vouchedNames = v.Names
+ 		}
+ 
+-		// Credential injection. Only for a domain a credential is bound to, and
+-		// only after policy has already allowed the dial — interception is
+-		// never a way around the egress decision.
+-		if brk != nil && r.ID().LocalPort == 443 {
+-			if name := interceptedName(brk, vouchedNames); name != "" {
+-				dialAddress := net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort))
+-				var wq waiter.Queue
+-				ep, tcpErr := r.CreateEndpoint(&wq)
+-				r.Complete(false)
+-				if tcpErr != nil {
+-					log.Debugf("r.CreateEndpoint() = %v", tcpErr)
+-					return
+-				}
+-				go func() {
+-					err := brk.Handle(gonet.NewTCPConn(&wq, ep), name, func() (net.Conn, error) {
+-						return net.Dial("tcp", dialAddress)
+-					})
+-					if err != nil {
+-						log.Infof("broker: %s: %v", name, err)
+-					}
+-				}()
++		// SNI inspection. The ledger says which names an address was handed
++		// out for; the ClientHello says which one this connection wants. On a
++		// shared CDN address only the latter is precise enough.
++		if pol.HasRules() && r.ID().LocalPort == 443 {
++			// Read everything off the request before completing it: a
++			// ForwarderRequest is invalid afterwards, and touching r.ID() then
++			// panics inside the forwarder goroutine.
++			port := r.ID().LocalPort
++			ip := net.IP(localAddress.AsSlice())
++			dialAddress := net.JoinHostPort(localAddress.String(), fmt.Sprint(port))
++
++			var wq waiter.Queue
++			ep, tcpErr := r.CreateEndpoint(&wq)
++			r.Complete(false)
++			if tcpErr != nil {
++				log.Debugf("r.CreateEndpoint() = %v", tcpErr)
+ 				return
+ 			}
++			go inspectAndForward(gonet.NewTCPConn(&wq, ep), ip, port, dialAddress, pol, brk)
++			return
+ 		}
+ 
+ 		outbound, err := net.Dial("tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)))
+@@ -104,15 +99,92 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 	})
+ }
+ 
+-// interceptedName returns the first vouched hostname the broker holds a
+-// credential for, or "" when none of them are bound.
+-func interceptedName(brk *broker.Broker, names []string) string {
+-	for _, name := range names {
+-		if brk.Intercepts(name) {
+-			return name
++// inspectAndForward reads the ClientHello, applies policy to the name it
++// advertises, and either splices the connection upstream or drops it.
++//
++// The peeked bytes are replayed verbatim, so the server sees the handshake the
++// guest sent. Nothing is decrypted and no certificate is involved.
++func inspectAndForward(
++	guest net.Conn, ip net.IP, port uint16, dialAddress string,
++	pol *policy.Engine, brk *broker.Broker,
++) {
++	defer guest.Close()
++
++	name, consumed, err := sni.PeekServerName(guest)
++	if err != nil && name == "" {
++		// Not TLS, or no name to check. The dial check already allowed this
++		// address, so forward what we read and splice the rest.
++		if len(consumed) == 0 {
++			return
++		}
++		spliceWithPrefix(guest, dialAddress, consumed)
++		return
++	}
++
++	if v := pol.AllowSNI(name, port); !v.Allowed {
++		log.Infof("policy: refused tls %s (%s) to %s", name, v.Reason, ip)
++		pol.RecordSNI("tcp", ip, port, v)
++		return
++	}
++
++	// A credential bound to this name means the broker must terminate TLS to
++	// substitute it. Replay the ClientHello into it so its handshake sees the
++	// stream from the start.
++	if brk.Intercepts(name) {
++		replayed := &prefixConn{Conn: guest, prefix: consumed}
++		if err := brk.Handle(replayed, name, func() (net.Conn, error) {
++			return net.Dial("tcp", dialAddress)
++		}); err != nil {
++			log.Infof("broker: %s: %v", name, err)
++		}
++		return
++	}
++
++	spliceWithPrefix(guest, dialAddress, consumed)
++}
++
++// prefixConn replays bytes already read from the connection before continuing
++// with the live stream. Peeking the ClientHello consumes it, and anything that
++// wants to speak TLS afterwards has to see it.
++type prefixConn struct {
++	net.Conn
++	prefix []byte
++}
++
++func (c *prefixConn) Read(b []byte) (int, error) {
++	if len(c.prefix) > 0 {
++		n := copy(b, c.prefix)
++		c.prefix = c.prefix[n:]
++		return n, nil
++	}
++	return c.Conn.Read(b)
++}
++
++// spliceWithPrefix dials upstream, replays the bytes already read, then hands
++// both ends to the same proxy the non-inspected path uses.
++//
++// Reusing tcpproxy here rather than copying by hand: getting half-close and
++// teardown right matters, and this path already had a working implementation.
++func spliceWithPrefix(guest net.Conn, dialAddress string, prefix []byte) {
++	upstream, err := net.Dial("tcp", dialAddress)
++	if err != nil {
++		log.Tracef("net.Dial() = %v", err)
++		return
++	}
++
++	if len(prefix) > 0 {
++		if _, err := upstream.Write(prefix); err != nil {
++			upstream.Close()
++			return
+ 		}
+ 	}
+-	return ""
++
++	remote := tcpproxy.DialProxy{
++		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
++			return upstream, nil
++		},
++	}
++	remote.HandleConn(guest)
+ }
+ 
+ func linkLocal() *tcpip.Subnet {
+diff --git a/pkg/sni/sni.go b/pkg/sni/sni.go
+new file mode 100644
+index 0000000..41cd251
+--- /dev/null
++++ b/pkg/sni/sni.go
+@@ -0,0 +1,168 @@
++// Package sni reads the server name out of a TLS ClientHello.
++//
++// The resolution ledger tells us which hostnames an address was handed out for,
++// which is enough to refuse an address we never vouched for. It is not enough
++// to be precise on a shared address: a CDN IP may serve both an allowed and an
++// unrelated name, and the ledger cannot say which one a given connection wants.
++//
++// The ClientHello can, and it is sent in the clear. Reading it needs no
++// interception, no certificate, and no key — the bytes are simply peeked before
++// being forwarded untouched.
++package sni
++
++import (
++	"errors"
++	"io"
++	"strings"
++)
++
++var (
++	// ErrNotTLS means the first bytes are not a TLS handshake record. The
++	// caller should fall through to whatever policy it applies without SNI.
++	ErrNotTLS = errors.New("not a TLS handshake")
++	// ErrNoServerName means a valid ClientHello carried no SNI extension,
++	// which is legal — an IP-literal connection has nothing to name.
++	ErrNoServerName = errors.New("no server name extension")
++	// ErrIncomplete means the record was truncated.
++	ErrIncomplete = errors.New("incomplete ClientHello")
++)
++
++// maxRecord bounds how much is read before giving up. A ClientHello is
++// normally well under 2 KiB; the TLS record limit is 16 KiB.
++const maxRecord = 16 * 1024
++
++// PeekServerName reads the first TLS record from r and returns the server name
++// it advertises, along with the bytes consumed so the caller can replay them.
++//
++// The returned bytes are ALWAYS the ones read, even on error, so a caller can
++// forward a connection it could not classify rather than breaking it.
++func PeekServerName(r io.Reader) (string, []byte, error) {
++	header := make([]byte, 5)
++	if _, err := io.ReadFull(r, header); err != nil {
++		return "", header, ErrIncomplete
++	}
++
++	// 0x16 = handshake; bytes 1-2 are the legacy record version.
++	if header[0] != 0x16 {
++		return "", header, ErrNotTLS
++	}
++
++	length := int(header[3])<<8 | int(header[4])
++	if length <= 0 || length > maxRecord {
++		return "", header, ErrNotTLS
++	}
++
++	body := make([]byte, length)
++	if _, err := io.ReadFull(r, body); err != nil {
++		return "", append(header, body...), ErrIncomplete
++	}
++	consumed := append(header, body...)
++
++	name, err := serverNameFromHandshake(body)
++	return name, consumed, err
++}
++
++// serverNameFromHandshake walks a ClientHello body to its server_name
++// extension. Every length is checked against the remaining buffer, because
++// this parses bytes chosen by the sandbox.
++func serverNameFromHandshake(b []byte) (string, error) {
++	// Handshake header: type(1) + length(3).
++	if len(b) < 4 || b[0] != 0x01 {
++		return "", ErrNotTLS
++	}
++	b = b[4:]
++
++	// client_version(2) + random(32)
++	if len(b) < 34 {
++		return "", ErrIncomplete
++	}
++	b = b[34:]
++
++	// session_id
++	if len(b) < 1 {
++		return "", ErrIncomplete
++	}
++	sessionLen := int(b[0])
++	if len(b) < 1+sessionLen {
++		return "", ErrIncomplete
++	}
++	b = b[1+sessionLen:]
++
++	// cipher_suites
++	if len(b) < 2 {
++		return "", ErrIncomplete
++	}
++	cipherLen := int(b[0])<<8 | int(b[1])
++	if len(b) < 2+cipherLen {
++		return "", ErrIncomplete
++	}
++	b = b[2+cipherLen:]
++
++	// compression_methods
++	if len(b) < 1 {
++		return "", ErrIncomplete
++	}
++	compressionLen := int(b[0])
++	if len(b) < 1+compressionLen {
++		return "", ErrIncomplete
++	}
++	b = b[1+compressionLen:]
++
++	// extensions
++	if len(b) < 2 {
++		// No extensions at all is legal, just nameless.
++		return "", ErrNoServerName
++	}
++	extensionsLen := int(b[0])<<8 | int(b[1])
++	b = b[2:]
++	if len(b) < extensionsLen {
++		return "", ErrIncomplete
++	}
++	b = b[:extensionsLen]
++
++	for len(b) >= 4 {
++		extType := int(b[0])<<8 | int(b[1])
++		extLen := int(b[2])<<8 | int(b[3])
++		b = b[4:]
++		if len(b) < extLen {
++			return "", ErrIncomplete
++		}
++		if extType == 0x0000 {
++			return parseServerNameList(b[:extLen])
++		}
++		b = b[extLen:]
++	}
++	return "", ErrNoServerName
++}
++
++func parseServerNameList(b []byte) (string, error) {
++	// server_name_list length(2)
++	if len(b) < 2 {
++		return "", ErrIncomplete
++	}
++	listLen := int(b[0])<<8 | int(b[1])
++	b = b[2:]
++	if len(b) < listLen {
++		return "", ErrIncomplete
++	}
++	b = b[:listLen]
++
++	for len(b) >= 3 {
++		nameType := b[0]
++		nameLen := int(b[1])<<8 | int(b[2])
++		b = b[3:]
++		if len(b) < nameLen {
++			return "", ErrIncomplete
++		}
++		// 0 = host_name; no other type has ever been defined.
++		if nameType == 0 {
++			name := strings.ToLower(strings.TrimSuffix(string(b[:nameLen]), "."))
++			if name == "" {
++				return "", ErrNoServerName
++			}
++			return name, nil
++		}
++		b = b[nameLen:]
++	}
++	return "", ErrNoServerName
++}
+diff --git a/pkg/sni/sni_test.go b/pkg/sni/sni_test.go
+new file mode 100644
+index 0000000..f079ee5
+--- /dev/null
++++ b/pkg/sni/sni_test.go
+@@ -0,0 +1,136 @@
++package sni
++
++import (
++	"bytes"
++	"crypto/tls"
++	"errors"
++	"io"
++	"net"
++	"testing"
++)
++
++// captureClientHello produces a real ClientHello by starting a TLS handshake
++// against a pipe and reading what the standard library sends. Hand-rolled
++// fixtures would only prove the parser matches the fixture.
++func captureClientHello(t *testing.T, serverName string) []byte {
++	t.Helper()
++	client, server := net.Pipe()
++
++	done := make(chan []byte, 1)
++	go func() {
++		buf := make([]byte, 4096)
++		n, _ := server.Read(buf)
++		done <- buf[:n]
++		server.Close()
++	}()
++
++	conn := tls.Client(client, &tls.Config{ServerName: serverName})
++	_ = conn.Handshake() // fails once the pipe closes; the hello is already sent
++	client.Close()
++
++	return <-done
++}
++
++func TestReadsServerNameFromRealClientHello(t *testing.T) {
++	for _, name := range []string{
++		"api.anthropic.com",
++		"example.com",
++		"a.very.deep.subdomain.example.org",
++	} {
++		hello := captureClientHello(t, name)
++		got, consumed, err := PeekServerName(bytes.NewReader(hello))
++		if err != nil {
++			t.Fatalf("%s: %v", name, err)
++		}
++		if got != name {
++			t.Errorf("got %q, want %q", got, name)
++		}
++		// The caller replays these bytes, so losing any would corrupt the
++		// handshake it forwards.
++		if len(consumed) == 0 || !bytes.HasPrefix(hello, consumed) {
++			t.Errorf("%s: consumed bytes are not a prefix of the hello", name)
++		}
++	}
++}
++
++func TestServerNameIsLowercased(t *testing.T) {
++	// Policy matching is case-insensitive, and normalising here keeps the
++	// comparison on one side of the boundary.
++	hello := captureClientHello(t, "API.Anthropic.COM")
++	got, _, err := PeekServerName(bytes.NewReader(hello))
++	if err != nil {
++		t.Fatalf("PeekServerName: %v", err)
++	}
++	if got != "api.anthropic.com" {
++		t.Errorf("got %q, want it lowercased", got)
++	}
++}
++
++func TestNonTLSIsReportedNotGuessed(t *testing.T) {
++	// A plain HTTP request must be classified as not-TLS so the caller falls
++	// back rather than inventing a hostname.
++	_, consumed, err := PeekServerName(bytes.NewReader([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n")))
++	if !errors.Is(err, ErrNotTLS) {
++		t.Errorf("err = %v, want ErrNotTLS", err)
++	}
++	if len(consumed) == 0 {
++		t.Error("consumed bytes must be returned even on error, so the caller can replay them")
++	}
++}
++
++func TestTruncatedInputIsRejected(t *testing.T) {
++	hello := captureClientHello(t, "example.com")
++	for _, cut := range []int{1, 4, 10, len(hello) / 2, len(hello) - 1} {
++		if _, _, err := PeekServerName(bytes.NewReader(hello[:cut])); err == nil {
++			t.Errorf("truncating to %d bytes should not parse", cut)
++		}
++	}
++}
++
++// The parser walks attacker-chosen lengths, so a malformed record must fail
++// rather than read out of bounds.
++func TestMalformedRecordsDoNotPanic(t *testing.T) {
++	cases := [][]byte{
++		{},
++		{0x16},
++		{0x16, 0x03, 0x01},
++		{0x16, 0x03, 0x01, 0x00, 0x00},
++		{0x16, 0x03, 0x01, 0xff, 0xff},
++		{0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0xff, 0xff, 0xff},
++		// Handshake claiming a session id longer than the record.
++		{0x16, 0x03, 0x01, 0x00, 0x28, 0x01, 0x00, 0x00, 0x24,
++			0x03, 0x03,
++			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++			0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++			0xff},
++	}
++	for i, input := range cases {
++		func() {
++			defer func() {
++				if r := recover(); r != nil {
++					t.Errorf("case %d panicked: %v", i, r)
++				}
++			}()
++			if _, _, err := PeekServerName(bytes.NewReader(input)); err == nil {
++				t.Errorf("case %d should not have parsed", i)
++			}
++		}()
++	}
++}
++
++func TestConsumedBytesReplayIntact(t *testing.T) {
++	// The forwarder writes these bytes upstream before splicing the rest, so
++	// they must reproduce the original stream exactly.
++	hello := captureClientHello(t, "example.com")
++	trailing := []byte("subsequent application data")
++	stream := io.MultiReader(bytes.NewReader(hello), bytes.NewReader(trailing))
++
++	_, consumed, err := PeekServerName(stream)
++	if err != nil {
++		t.Fatalf("PeekServerName: %v", err)
++	}
++	rest, _ := io.ReadAll(stream)
++	if !bytes.Equal(append(consumed, rest...), append(hello, trailing...)) {
++		t.Error("replaying consumed bytes plus the remainder must equal the original stream")
++	}
++}
+-- 
+2.50.1 (Apple Git-155)
+

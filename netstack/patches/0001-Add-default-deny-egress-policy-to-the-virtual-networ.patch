@@ -1,7 +1,7 @@
 From f153e2246180bc16349b01e1396ad1c6ee990e78 Mon Sep 17 00:00:00 2001
 From: Satish Babariya <themadengineer99@gmail.com>
 Date: Tue, 25 Aug 2026 19:23:50 +0530
-Subject: [PATCH 1/2] Add default-deny egress policy to the virtual network
+Subject: [PATCH 1/3] Add default-deny egress policy to the virtual network
 
 The gateway terminates every flow from the guest, which makes it the one
 place egress can be enforced that the guest cannot reach. This adds an

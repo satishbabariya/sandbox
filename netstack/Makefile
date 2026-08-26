@@ -24,7 +24,12 @@ $(WORK)/.fetched:
 	@git -C $(WORK) checkout -q FETCH_HEAD
 	@touch $@
 
+# Reset before applying. Without this, editing a patch re-applies the whole
+# series onto an already-patched tree and fails — which then leaves a stale
+# binary in place rather than an obvious error.
 $(WORK)/.patched: $(WORK)/.fetched $(wildcard patches/*.patch)
+	@git -C $(WORK) checkout -q -- .
+	@git -C $(WORK) clean -qfd
 	@echo "applying $(words $(wildcard patches/*.patch)) patch(es)"
 	@git -C $(WORK) apply --whitespace=nowarn $(addprefix $(CURDIR)/,$(wildcard patches/*.patch))
 	@touch $@
@@ -47,7 +52,7 @@ $(BIN): $(WORK)/.patched check-vectors
 
 .PHONY: test
 test: $(WORK)/.patched check-vectors
-	@cd $(WORK) && GOFLAGS=-mod=vendor go test ./pkg/policy/ ./pkg/broker/ ./pkg/services/dns/ ./pkg/services/forwarder/
+	@cd $(WORK) && GOFLAGS=-mod=vendor go test ./pkg/policy/ ./pkg/broker/ ./pkg/sni/ ./pkg/services/dns/ ./pkg/services/forwarder/
 
 .PHONY: clean
 clean:

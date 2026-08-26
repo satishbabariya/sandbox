@@ -58,6 +58,11 @@ there is nowhere else to send them.
 2. **Dial.** The forwarder refuses any address our resolver did not vouch for
    under an allowed name. Hardcoding an IP to skip DNS therefore fails closed
    rather than bypassing the check.
+3. **SNI.** On port 443 the ClientHello is peeked and policy applied to the
+   name it actually asks for. The ledger can only say which names an address
+   was handed out for; on a shared CDN address that is not precise enough. The
+   ClientHello is sent in the clear, so this needs no interception, no
+   certificate, and no key — the bytes are replayed verbatim.
 
 Deny is evaluated before allow everywhere, including across every name sharing a
 CDN address, so a denied name cannot be laundered through a second name on the
@@ -79,6 +84,7 @@ Against live VMs on `alpine:3.20`:
 | **container started by dockerd inside the sandbox** | same policy applies |
 | `--secret anthropic` | guest sees `airlock-managed`; real value absent from the guest |
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
+| **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -321,7 +327,7 @@ disagreed with the enforcement point would be worse than no CLI.
 ## Status
 
 **Working:** agent profiles with cached environments, enforced egress (DNS gate
-+ dial gate), policy audit log, named persistent sandboxes (`run --detach`,
++ dial gate + SNI inspection), policy audit log, named persistent sandboxes (`run --detach`,
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
