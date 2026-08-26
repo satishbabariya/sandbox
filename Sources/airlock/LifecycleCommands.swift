@@ -328,15 +328,41 @@ struct PruneCommand: AsyncParsableCommand {
         // kill -9, or an older build that did not clean up leaves these in
         // /tmp, and nothing else would ever remove them.
         let orphans = Self.orphanedRuntimeDirectories(store: store)
+        var gateways = 0
         for directory in orphans {
+            // Before the directory goes: the gateway's pid is in it, and the
+            // gateway is what actually holds resources. Removing the directory
+            // first would leave a process nothing could ever find again.
+            if Self.terminateGateway(in: directory) { gateways += 1 }
             try? FileManager.default.removeItem(at: directory)
         }
         if !orphans.isEmpty {
             print("removed \(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
             removed += orphans.count
         }
+        if gateways > 0 {
+            print("stopped \(gateways) orphaned gateway\(gateways == 1 ? "" : "s")")
+        }
 
         if removed == 0 { print("nothing to prune") }
+    }
+
+    /// Stop the gateway recorded in a runtime directory, if it is still alive.
+    ///
+    /// Returns whether one was actually signalled, so prune can say so rather
+    /// than claiming to have tidied something it did not.
+    static func terminateGateway(in directory: URL) -> Bool {
+        let pidFile = directory.appending(path: "gateway.pid")
+        guard let text = try? String(contentsOf: pidFile, encoding: .utf8),
+            let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+            pid > 0
+        else { return false }
+
+        // A pid is only meaningful while the process is alive; sending to a
+        // recycled one would kill something unrelated. kill(0) reports whether
+        // it exists and is ours without touching it.
+        guard kill(pid, 0) == 0 else { return false }
+        return kill(pid, SIGTERM) == 0
     }
 
     /// Runtime directories under /tmp whose sandbox no longer exists.

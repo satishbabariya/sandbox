@@ -139,6 +139,14 @@ public actor NetstackSupervisor {
         try proc.run()
         self.process = proc
 
+        // Recorded so the gateway can be reaped if airlock never gets to stop
+        // it. A gateway is a child process: kill airlock with a signal it
+        // cannot handle -- or let a test harness time it out -- and the gateway
+        // outlives it, holding a socket and a policy for a sandbox that is
+        // gone.
+        try? Data("\(proc.processIdentifier)\n".utf8).write(
+            to: config.runtimeDirectory.appending(path: "gateway.pid"), options: .atomic)
+
         try await waitForSocket(gatewaySocket, process: proc)
 
         let link = try GuestLink(gatewayPath: gatewaySocket, clientPath: clientSocket)
