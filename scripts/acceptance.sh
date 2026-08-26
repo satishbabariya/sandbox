@@ -308,6 +308,46 @@ check "guest sees only the sentinel" "KEY=airlock-managed" "$out"
 check "real secret never enters the guest" "LEAKS=0" "$out"
 $B secret rm anthropic >/dev/null 2>&1
 
+echo "== snapshot and templates =="
+
+# A snapshot is only worth anything if what the sandbox wrote comes back. The
+# control matters as much as the assertion: a template that restored an empty
+# filesystem would also produce no marker, and would look identical.
+$B rm snaptest --force >/dev/null 2>&1
+$B templates rm accepttpl >/dev/null 2>&1
+$B run "$IMAGE" --name snaptest --detach --no-tty -- /bin/sh -c 'sleep 300' >/dev/null 2>&1
+$B exec snaptest -- /bin/sh -c 'echo snapshot-marker >/root/marker.txt' >/dev/null 2>&1
+out=$($B snapshot snaptest accepttpl 2>&1)
+check "snapshot reports what it saved" "saved template 'accepttpl'" "$out"
+check "the template is listed" "accepttpl" "$($B templates list 2>&1)"
+
+out=$($B run --template accepttpl "$IMAGE" --no-tty -- \
+  /bin/sh -c 'cat /root/marker.txt 2>&1; echo "ALIVE=yes"' 2>&1)
+check "control: a sandbox from the template runs" "ALIVE=yes" "$out"
+check "what the sandbox wrote survives into the template" "snapshot-marker" "$out"
+
+# A fresh sandbox on the same image must NOT have it, or the marker proves
+# nothing about the template.
+out=$($B run "$IMAGE" --no-tty -- /bin/sh -c 'cat /root/marker.txt 2>&1' 2>&1)
+check_absent "an ordinary sandbox has no trace of it" "snapshot-marker" "$out"
+
+echo "== copying files in and out =="
+
+PAYLOAD="cp-payload-$$"
+printf '%s\n' "$PAYLOAD" >/tmp/airlock-cp-in.txt
+rm -f /tmp/airlock-cp-out.txt
+$B cp /tmp/airlock-cp-in.txt snaptest:/root/copied.txt >/dev/null 2>&1
+check "a copied file arrives in the guest" "$PAYLOAD" \
+  "$($B exec snaptest -- /bin/sh -c 'cat /root/copied.txt' 2>&1)"
+
+$B cp snaptest:/root/copied.txt /tmp/airlock-cp-out.txt >/dev/null 2>&1
+check "and comes back unchanged" "$PAYLOAD" "$(cat /tmp/airlock-cp-out.txt 2>&1)"
+rm -f /tmp/airlock-cp-in.txt /tmp/airlock-cp-out.txt
+
+$B rm snaptest --force >/dev/null 2>&1
+$B templates rm accepttpl >/dev/null 2>&1
+check_absent "removing a template removes it" "accepttpl" "$($B templates list 2>&1)"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
