@@ -125,6 +125,30 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
   wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
 check_absent "there is no IPv6 way out" "ESCAPED" "$out"
 
+echo "== the share is the only part of the host the guest sees =="
+
+FSW=$(mktemp -d)
+mkdir -p "$FSW/inside"
+echo workspace-file >"$FSW/inside/ok.txt"
+echo SECRET-OUTSIDE-THE-SHARE >"$FSW/outside.txt"
+out=$(cd "$FSW/inside" && $B run "$CLONE_IMAGE" --no-tty -- /bin/sh -c "
+  ls /workspace
+  cat /workspace/../outside.txt 2>&1 | head -1
+  cat $FSW/outside.txt 2>&1 | head -1
+  ln -sf $FSW/outside.txt /workspace/escape 2>/dev/null
+  cat /workspace/escape 2>&1 | head -1" 2>&1)
+
+check "control: the share itself is visible" "ok.txt" "$out"
+check_absent "nothing outside it can be read" "SECRET-OUTSIDE-THE-SHARE" "$out"
+# A symlink out is resolved against the guest's own root, where the target does
+# not exist -- so the agent cannot follow one it plants.
+check "a symlink out of the share does not resolve" "No such file" "$out"
+# But it is still a file written into your tree, which is what the mount is
+# for, and a tool you run afterwards would follow it. Documented, not blocked.
+check "the symlink is a plain write into the workspace" "outside.txt" \
+  "$(readlink "$FSW/inside/escape" 2>&1)"
+rm -rf "$FSW"
+
 echo "== interception is scoped to the domains a credential is bound to =="
 
 # Substituting a credential means terminating TLS, so the guest is given a CA

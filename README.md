@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 118 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 122 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -110,6 +110,7 @@ default for being awkward.
 | DNS over TCP for a denied name | `REFUSED`, while an allowed name resolves |
 | Runtime and state directories | `drwx------`; another account cannot read an agent's console log |
 | **TLS interception scope** | a bound domain verifies against airlock's CA; an unbound one does not, and the CA key never leaves the host |
+| Guest reading outside the share (`..`, absolute path, symlink) | all refused; the share is the only thing visible |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
@@ -156,6 +157,12 @@ Being wrong about this is worse than not shipping it.
   agent push your private repo to an attacker's GitHub account. This is a
   network control, not a data-loss control.
 - **Anything written into the mounted workspace.** That is what the mount is for.
+  Including a **symlink pointing outside it**. The agent cannot follow one — the
+  guest resolves it against its own root, where the target does not exist, which
+  is verified — but a tool *you* run afterwards over your tree will: an editor,
+  `grep -r`, `tar`, a build step. Sharing a writable directory with an untrusted
+  process has this property whatever the runtime; `--clone` avoids it by giving
+  the agent a tree that is not yours.
 - **Side channels** — timing, or data encoded in DNS names within an allowed zone.
 - **Filesystem access beyond directory granularity.** Virtualization.framework
   offers no per-file-operation hook, so airlock cannot express "allow
