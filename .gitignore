@@ -3,3 +3,5 @@
 *.xcodeproj
 .DS_Store
 netstack/.work/
+# Release archives built by `make package`.
+dist/

@@ -48,31 +48,17 @@ jobs:
             Sources/AirlockKit/Version.swift
           grep current Sources/AirlockKit/Version.swift
 
-      - name: Build release
-        run: make build CONFIG=release
-
-      - name: Verify the entitlement survived
-        run: |
-          codesign -d --entitlements - .build/release/airlock 2>&1 \
-            | grep -q virtualization \
-            || { echo "release binary lost its entitlement; it cannot start a VM"; exit 1; }
-
       - name: Test
         run: |
           swift test
           make -C netstack test
 
+      # `make package` also builds release and verifies the archive: that the
+      # entitlement survived being copied and tarred, that the gateway is in
+      # there, and that the binary runs. Defined in the Makefile rather than
+      # here so it can be checked without cutting a tag.
       - name: Package
-        run: |
-          V="${{ steps.version.outputs.value }}"
-          STAGE="airlock-${V}-darwin-arm64"
-          mkdir -p "dist/$STAGE/bin"
-          cp .build/release/airlock "dist/$STAGE/bin/"
-          cp .build/bin/gvairlock "dist/$STAGE/bin/"
-          cp README.md LICENSE SECURITY.md "dist/$STAGE/"
-          cd dist
-          tar -czf "$STAGE.tar.gz" "$STAGE"
-          shasum -a 256 "$STAGE.tar.gz" | tee "$STAGE.tar.gz.sha256"
+        run: make package VERSION="${{ steps.version.outputs.value }}"
 
       # The formula pins the source tarball GitHub generates for the tag, not
       # the binary archive above: a poured bottle would arrive without the

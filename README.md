@@ -164,6 +164,12 @@ $ airlock doctor          # check everything at once
 installing anything, `make build` puts the CLI at `.build/debug/airlock`, which
 finds its gateway in the build tree.
 
+`make package VERSION=v0.1.0` builds the archive a release publishes and checks
+it: that the entitlement survived being copied and tarred, that the gateway is
+in there, and that the binary runs. An archive that lost its signature would
+install cleanly and then fail at VM start with an error about entitlements
+rather than about the download.
+
 The CLI **must** be codesigned with `com.apple.security.virtualization` or
 Virtualization refuses to start the VM. `make build` always signs; a bare
 `swift build` produces a binary that fails at VM start with an opaque error —

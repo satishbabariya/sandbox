@@ -73,6 +73,44 @@ install-kernel: $(KERNEL)
 # binary, so this builds release unless CONFIG says otherwise.
 PREFIX ?= /usr/local
 
+# Build the archive a release publishes.
+#
+# Defined here rather than only in the release workflow so it can be run and
+# checked without cutting a tag: the tarball is what a user actually downloads,
+# and the entitlement it carries is what decides whether it can start a VM at
+# all. VERSION is the tag, e.g. v0.1.0.
+VERSION ?= v0.0.0-dev
+STAGE := airlock-$(VERSION)-darwin-arm64
+
+.PHONY: package
+package:
+	@$(MAKE) build CONFIG=release
+	@rm -rf dist/$(STAGE)
+	@mkdir -p dist/$(STAGE)/bin
+	@cp .build/release/airlock dist/$(STAGE)/bin/
+	@cp $(GATEWAY) dist/$(STAGE)/bin/
+	@cp README.md LICENSE SECURITY.md dist/$(STAGE)/
+	@tar -czf dist/$(STAGE).tar.gz -C dist $(STAGE)
+	@shasum -a 256 dist/$(STAGE).tar.gz | tee dist/$(STAGE).tar.gz.sha256
+	@$(MAKE) verify-package
+
+# Check the archive, not the build tree. codesign travels in an extended
+# attribute, and an archive that dropped it would install cleanly and then fail
+# at VM start with an error about entitlements rather than about the download.
+.PHONY: verify-package
+verify-package:
+	@rm -rf dist/verify && mkdir -p dist/verify
+	@tar -xzf dist/$(STAGE).tar.gz -C dist/verify
+	@codesign -d --entitlements - dist/verify/$(STAGE)/bin/airlock 2>&1 \
+	  | grep -q virtualization \
+	  || { echo "ERROR: the archived binary has no virtualization entitlement"; exit 1; }
+	@test -x dist/verify/$(STAGE)/bin/gvairlock \
+	  || { echo "ERROR: the archive has no gateway, so no sandbox can start"; exit 1; }
+	@dist/verify/$(STAGE)/bin/airlock --version >/dev/null \
+	  || { echo "ERROR: the archived binary does not run"; exit 1; }
+	@echo "package ok: $$(dist/verify/$(STAGE)/bin/airlock --version), entitlement intact"
+	@rm -rf dist/verify
+
 .PHONY: install
 install:
 	@$(MAKE) build CONFIG=release
