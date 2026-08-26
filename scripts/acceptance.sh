@@ -165,6 +165,32 @@ check "config deny cannot be flagged away" "BLOCKED" "$out"
 "$B" config unset deny >/dev/null 2>&1
 if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 
+echo "== sandbox isolation =="
+
+# Every sandbox gets the same private subnet, so the question is whether two of
+# them can reach each other. They cannot: each gateway is a separate userspace
+# network, and there is no address by which one sandbox can name another.
+"$B" rm iso-server --force >/dev/null 2>&1
+"$B" rm iso-client --force >/dev/null 2>&1
+"$B" run docker.io/library/python:3.12-alpine --name iso-server -d --no-tty -- \
+  /bin/sh -c 'echo isolated-server >/tmp/i.html; cd /tmp && python3 -m http.server 8000 --bind 0.0.0.0' \
+  >/dev/null 2>&1
+"$B" run "$CLONE_IMAGE" --name iso-client -d --no-tty -- \
+  /bin/sh -c 'while true; do sleep 3600; done' >/dev/null 2>&1
+sleep 8
+
+# The control matters: without it this passes whenever the server failed to
+# start, which is exactly how an earlier version of it lied.
+check "control: the server is reachable from its own sandbox" "isolated-server" \
+  "$("$B" exec iso-server --no-tty -- /bin/sh -c \
+    'wget -q -O- -T5 http://192.168.127.2:8000/i.html' 2>&1)"
+check "another sandbox cannot reach it at the same address" "unreachable" \
+  "$("$B" exec iso-client --no-tty -- /bin/sh -c \
+    'curl -s -m 6 http://192.168.127.2:8000/i.html || echo unreachable' 2>&1)"
+
+"$B" rm iso-server --force >/dev/null 2>&1
+"$B" rm iso-client --force >/dev/null 2>&1
+
 echo "== cleanup =="
 
 count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }

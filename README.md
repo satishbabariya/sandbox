@@ -86,6 +86,7 @@ Against live VMs on `alpine:3.20`:
 | `--secret claude` (host OAuth) | `HTTP 200` from the real API; token appears 0 times in the guest |
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 | **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
+| One sandbox reaching another at the same address | unreachable; control proves the server was up |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -96,6 +97,18 @@ airlock process, not on dropping capabilities.
 The dockerd row matters for a different reason — a container started *inside* the
 sandbox inherits the policy with nothing extra wired up, because it is behind the
 same single interface.
+
+## Concurrency and isolation
+
+Sandboxes run side by side. Each gets its own gateway, its own policy, its own
+resolution ledger, and its own audit log — nothing is shared between them.
+
+They all use the same private subnet, which sounds like a collision and is not:
+each gateway is a separate userspace network reachable only over that sandbox's
+own socket. The practical consequence is that **one sandbox has no address by
+which to name another**. Verified with a server running in one sandbox and a
+second sandbox failing to reach it at the identical address, with a control
+proving the server was actually up.
 
 ## What this does NOT protect against
 
