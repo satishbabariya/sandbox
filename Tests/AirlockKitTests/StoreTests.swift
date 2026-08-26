@@ -424,3 +424,146 @@ struct HostKeychainTests {
         #expect(CredentialBinding.oauthPreset(for: "nonsense") == nil)
     }
 }
+
+@Suite("Docker kit import")
+struct KitTests {
+    private func spec(_ yaml: String) throws -> KitSpec {
+        let path = URL(filePath: NSTemporaryDirectory())
+            .appending(path: "kit-\(UInt32.random(in: 0..<0xFFFF_FFFF)).yaml")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try yaml.write(to: path, atomically: true, encoding: .utf8)
+        return try KitSpec.load(from: path)
+    }
+
+    @Test("translates the shape a real kit uses")
+    func translatesRealShape() throws {
+        let parsed = try spec(
+            """
+            schemaVersion: "2"
+            kind: sandbox
+            name: demo
+            displayName: Demo Agent
+            sandbox:
+              image: docker/sandbox-templates:shell
+              entrypoint:
+                - /usr/bin/demo
+              command:
+                default: ["--flag"]
+            permissions:
+              network:
+                allow:
+                  - api.example.com
+                  - "*.example.org"
+            environment:
+              variables:
+                DEMO_MODE: "on"
+            setup:
+              install:
+                - command: install-demo
+                  user: "1000"
+            """)
+        let result = try KitTranslator.translate(parsed)
+
+        #expect(result.profile.name == "demo")
+        #expect(result.profile.displayName == "Demo Agent")
+        #expect(result.profile.image == "docker/sandbox-templates:shell")
+        // entrypoint and the default command concatenate.
+        #expect(result.profile.command == ["/usr/bin/demo", "--flag"])
+        #expect(result.profile.allow == ["api.example.com", "*.example.org"])
+        #expect(result.profile.environment["DEMO_MODE"] == "on")
+        #expect(result.profile.install == ["install-demo"])
+    }
+
+    @Test("a deny rule is reported, never silently dropped")
+    func denyIsReported() throws {
+        // A profile carries no deny list. Dropping one quietly would produce a
+        // sandbox weaker than the kit author described.
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            permissions:
+              network:
+                allow: ["a.example.com"]
+                deny: ["blocked.example.com"]
+            """)
+        let result = try KitTranslator.translate(parsed)
+        #expect(result.notes.contains { $0.contains("blocked.example.com") })
+    }
+
+    @Test("startup commands are reported as unsupported")
+    func startupIsReported() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            setup:
+              startup:
+                - command: ["do", "a thing"]
+                  background: true
+            """)
+        let result = try KitTranslator.translate(parsed)
+        #expect(result.unsupported.contains { $0.contains("setup.startup") })
+    }
+
+    @Test("argv install steps survive quoting")
+    func argvQuoting() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            setup:
+              install:
+                - command: ["sh", "-c", "echo hello world"]
+            """)
+        let result = try KitTranslator.translate(parsed)
+        // Losing the quoting would turn one argument into three.
+        #expect(result.profile.install == ["sh -c 'echo hello world'"])
+    }
+
+    @Test("a mixin is refused rather than half-imported")
+    func mixinRefused() throws {
+        let parsed = try spec(
+            """
+            name: some-mixin
+            kind: mixin
+            """)
+        #expect(throws: KitError.self) { try KitTranslator.translate(parsed) }
+    }
+
+    @Test("a kit with no image is refused")
+    func missingImageRefused() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            """)
+        #expect(throws: KitError.self) { try KitTranslator.translate(parsed) }
+    }
+
+    @Test("an OAuth credential is reported with its endpoint")
+    func oauthReported() throws {
+        // Real kits write tokenEndpoint as a mapping, not a string.
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            credentials:
+              - service: something
+                oauth:
+                  tokenEndpoint:
+                    host: api.example.com
+                    path: /token
+            """)
+        let result = try KitTranslator.translate(parsed)
+        #expect(result.unsupported.contains { $0.contains("api.example.com/token") })
+    }
+}

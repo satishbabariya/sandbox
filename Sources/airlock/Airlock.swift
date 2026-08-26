@@ -14,6 +14,7 @@ struct Airlock: AsyncParsableCommand {
             SnapshotCommand.self, TemplatesCommand.self,
             PolicyCommand.self, SecretCommand.self, AgentsCommand.self,
             DoctorCommand.self, KernelCommand.self, ConfigCommand.self,
+            KitCommand.self,
             SuperviseCommand.self,
         ]
     )

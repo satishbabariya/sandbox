@@ -273,6 +273,25 @@ $ airlock ls / logs / stop / rm / prune
 Each detached sandbox is held by its own supervisor process with its own
 gateway — no daemon to manage, and no shared component between sandboxes.
 
+## Importing Docker Sandboxes kits
+
+```console
+$ airlock kit inspect ./aider      # what it would become
+$ airlock kit import ./aider       # then: airlock run aider
+```
+
+Kits are the extension format `sbx` uses, and there is a body of existing ones.
+airlock reads a faithful subset and **reports what it cannot honour** rather
+than quietly producing a sandbox the kit author did not describe — a dropped
+deny rule would be a weaker sandbox than the one they wrote.
+
+Against the 41 kits in `docker/sbx-kits-contrib`: **21 sandbox kits translate,
+20 mixins are correctly refused** (they are meant to be composed, and airlock
+has no composition model), 0 parse errors.
+
+Not carried across, and said so at import time: `setup.startup` (commands on
+every start), `setup.files`, `extends`, `mixins`, and OAuth credential flows.
+
 ## Templates
 
 ```console
@@ -354,15 +373,15 @@ disagreed with the enforcement point would be worse than no CLI.
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
-file, templates and snapshots, interactive terminals, `doctor`,
-`kernel install`.
+file, templates and snapshots, Docker kit import, interactive terminals,
+`doctor`, `kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
 interception), dynamic filesystem approval (`VZHotplugProvider`),
 kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
 divergence — see above), OAuth flows beyond a host sign-in already present
-(airlock reuses one but does not perform the sign-in itself), a TUI,
-x86 emulation.
+(airlock reuses one but does not perform the sign-in itself), kit composition
+(`extends` / `mixins`), a TUI, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation
