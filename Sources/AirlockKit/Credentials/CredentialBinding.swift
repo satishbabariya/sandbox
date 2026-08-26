@@ -128,6 +128,23 @@ public struct BrokerConfiguration: Codable, Sendable, Equatable {
                     value: binding.format.replacingOccurrences(of: "{}", with: secret)
                 ))
         }
+        // Several bindings can cover the same domain — an API key and an OAuth
+        // sign-in both authenticate api.anthropic.com. Warning about the one
+        // that is unset, when the other resolved, is noise that reads as a
+        // problem.
+        let covered = Set(resolved.map(\.domain))
+        let domainFor = { (service: String) -> String? in
+            bindings.first { $0.service == service }?.domain
+        }
+        missing = missing.filter { service in
+            guard let domain = domainFor(service) else { return true }
+            return !covered.contains(domain)
+        }
+        expired = expired.filter { service in
+            guard let domain = domainFor(service) else { return true }
+            return !covered.contains(domain)
+        }
+
         return (BrokerConfiguration(credentials: resolved), missing, expired)
     }
 }

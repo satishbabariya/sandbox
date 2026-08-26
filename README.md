@@ -115,10 +115,15 @@ Being wrong about this is worse than not shipping it.
 
 Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.21+.
 
+Building from source is currently the only way to install. There is no
+published tap or release yet — the Homebrew formula in `packaging/` and the
+release workflow are ready for when there is.
+
 ```console
-$ brew install satishbabariya/tap/airlock   # or: make build
-$ airlock kernel install                    # guest kernel, ~280 MiB download
-$ airlock doctor                            # check everything at once
+$ git clone <this repo> && cd airlock
+$ make build              # CLI + gateway, signed with the entitlement
+$ airlock kernel install  # guest kernel, ~280 MiB download
+$ airlock doctor          # check everything at once
 ```
 
 The CLI **must** be codesigned with `com.apple.security.virtualization` or

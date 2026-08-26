@@ -1,5 +1,10 @@
 # Homebrew formula for airlock.
 #
+# NOT PUBLISHED YET. The url and sha256 below point at a release tag that does
+# not exist; both are filled in by the release workflow when one is cut. This
+# file exists so that publishing is a matter of tagging, not of writing a
+# formula under time pressure.
+#
 # Building from source rather than shipping a bottle: the binary must be
 # codesigned with com.apple.security.virtualization on the machine it runs on,
 # and a poured bottle would arrive without a signature that macOS accepts.

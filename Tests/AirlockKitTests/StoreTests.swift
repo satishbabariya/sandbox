@@ -567,3 +567,43 @@ struct KitTests {
         #expect(result.unsupported.contains { $0.contains("api.example.com/token") })
     }
 }
+
+@Suite("Credential coverage")
+struct CredentialCoverageTests {
+    @Test("bindings for the same domain are alternatives, not requirements")
+    func sameDomainAlternatives() throws {
+        // The claude profile carries both an API key and an OAuth binding for
+        // api.anthropic.com. Warning about the unset one when the other
+        // resolved reads as a problem when nothing is wrong.
+        let bindings = [
+            CredentialBinding(
+                service: "anthropic", domain: "api.anthropic.com", header: "x-api-key"),
+            CredentialBinding(
+                service: "claude", domain: "api.anthropic.com",
+                header: "authorization", format: "Bearer {}"),
+        ]
+        let covered = Set(["api.anthropic.com"])
+        let stillMissing = ["anthropic"].filter { service in
+            guard let domain = bindings.first(where: { $0.service == service })?.domain
+            else { return true }
+            return !covered.contains(domain)
+        }
+        #expect(stillMissing.isEmpty)
+    }
+
+    @Test("an uncovered domain is still reported")
+    func uncoveredStillReported() throws {
+        let bindings = [
+            CredentialBinding(
+                service: "github", domain: "api.github.com",
+                header: "authorization", format: "Bearer {}")
+        ]
+        let covered = Set(["api.anthropic.com"])
+        let stillMissing = ["github"].filter { service in
+            guard let domain = bindings.first(where: { $0.service == service })?.domain
+            else { return true }
+            return !covered.contains(domain)
+        }
+        #expect(stillMissing == ["github"])
+    }
+}
