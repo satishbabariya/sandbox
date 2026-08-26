@@ -165,6 +165,25 @@ check "config deny cannot be flagged away" "BLOCKED" "$out"
 "$B" config unset deny >/dev/null 2>&1
 if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 
+echo "== docker inside the sandbox =="
+
+# Skippable: it pulls a dind image and is the slowest case here.
+if [ "${AIRLOCK_SKIP_DOCKER:-0}" = "1" ]; then
+  echo "  skipped (AIRLOCK_SKIP_DOCKER=1)"
+else
+  out=$($B run docker.io/library/docker:28-dind --docker --no-tty \
+    --allow '*.docker.io' --allow '*.docker.com' -- /bin/sh -c '
+      docker version --format "server={{.Server.Version}}" 2>&1 | tail -1
+      docker run --rm docker.io/library/alpine:3.20 sh -c \
+        "wget -T5 -q -O/dev/null http://example.com && echo NESTED_ESCAPED || echo NESTED_BLOCKED"' 2>&1)
+  # dockerd needs writable sysctls; without clearing readonlyPaths it dies at
+  # "failed to set IP forwarding", which this catches.
+  check "dockerd starts" "server=" "$out"
+  # A container started inside the sandbox is behind the same interface, so it
+  # inherits the same policy with nothing extra wired up.
+  check "a nested container inherits the policy" "NESTED_BLOCKED" "$out"
+fi
+
 echo "== agents run unprivileged =="
 
 # Claude Code refuses --dangerously-skip-permissions as root, so an agent

@@ -305,6 +305,11 @@ public actor Sandbox {
             config.process.terminal = spec.terminal
             if spec.privileged {
                 config.process.capabilities = .allCapabilities
+                // Docker's own --privileged clears these too. dockerd writes
+                // sysctls to set up its bridge, and /proc/sys being read-only
+                // makes it fail at "failed to set IP forwarding".
+                config.maskedPaths = []
+                config.readonlyPaths = []
             }
             if spec.terminal, let host = spec.hostTerminal {
                 // A PTY carries both streams, and the runtime rejects a
@@ -340,6 +345,10 @@ public actor Sandbox {
             }
 
             if let dockerDisk {
+                // dockerd turns this on itself, but only if /proc/sys is
+                // writable; setting it here means the daemon finds it already
+                // correct rather than depending on that.
+                config.sysctl["net.ipv4.ip_forward"] = "1"
                 config.mounts.append(
                     .block(
                         format: "ext4",

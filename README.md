@@ -91,6 +91,7 @@ Against live VMs on `alpine:3.20`:
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
 | **Agent fixes a bug and proves it** | edits code, installs pytest itself, `1 passed`, host tree untouched |
 | Agent process identity | `uid=1000`, with sudo available inside its own VM |
+| **`docker compose up` inside a sandbox** | nginx served to the host through a published port |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -255,6 +256,10 @@ $ airlock run docker:28-dind --docker --allow '*.docker.io' -- /bin/sh
 dockerd gets its own ext4 disk at `/var/lib/docker`. Containers it starts are
 behind the same single interface, so **they inherit the same egress policy** with
 nothing extra wired up.
+
+`docker compose` works. Verified end to end: a compose stack inside the sandbox
+serving nginx, reached from the host through a published port, while a nested
+container is still refused a denied host.
 
 Implies `--privileged`. The guest kernel does not expose the nf_tables netlink
 API, so airlock points iptables at the legacy backend when the nft shim is
