@@ -108,7 +108,7 @@ public struct SandboxStore: Sendable {
 
     public func save(_ record: SandboxRecord) throws {
         try Self.validate(name: record.name)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: directory)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601

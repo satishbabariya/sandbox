@@ -430,8 +430,7 @@ public struct AgentRegistry: Sendable {
     }
 
     public func write(_ profile: AgentProfile) throws {
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: directory)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(profile).write(

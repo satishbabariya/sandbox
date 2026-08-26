@@ -153,6 +153,25 @@ public struct SandboxSpec: Sendable {
     }
 }
 
+/// Create a directory only its owner can enter.
+///
+/// A sandbox's runtime directory sits in /tmp and holds the console output of
+/// whatever the agent did, the policy it was given, and the paths of the files
+/// holding resolved secrets. The secrets themselves are written 0600, but the
+/// rest was 0644 in a world-traversable directory -- so another account on the
+/// machine could read an agent's entire console log. Restricting the directory
+/// covers everything inside it, whatever mode each file is written with.
+func createPrivateDirectory(at url: URL) throws {
+    try FileManager.default.createDirectory(
+        at: url, withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700])
+    // createDirectory only applies attributes to directories it creates, so an
+    // existing one -- a reused name, or a directory from an older build --
+    // keeps whatever mode it had.
+    try? FileManager.default.setAttributes(
+        [.posixPermissions: 0o700], ofItemAtPath: url.path)
+}
+
 /// Where airlock keeps kernels, images, and per-sandbox runtime state.
 public struct AirlockPaths: Sendable {
     public let root: URL
@@ -162,6 +181,11 @@ public struct AirlockPaths: Sendable {
             root
             ?? FileManager.default.homeDirectoryForCurrentUser
             .appending(path: ".airlock")
+        // Tightened here as well as at creation, so a directory made by an
+        // earlier build -- which left it world-readable -- is corrected the
+        // next time airlock runs rather than staying open forever.
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700], ofItemAtPath: self.root.path)
     }
 
     public var kernel: URL { root.appending(path: "vmlinux-arm64") }
@@ -236,7 +260,7 @@ public actor Sandbox {
         // 1. Gateway first: the VM's only NIC is a socket connected to it.
         let socketDir = paths.socketDirectory(spec.id)
         let runtimeDir = paths.runtime(spec.id)
-        try FileManager.default.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: runtimeDir)
 
         let supervisor = NetstackSupervisor(
             binary: gatewayBinary,

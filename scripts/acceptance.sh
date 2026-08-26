@@ -125,6 +125,26 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
   wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
 check_absent "there is no IPv6 way out" "ESCAPED" "$out"
 
+echo "== other accounts on this machine see nothing =="
+
+# A sandbox's runtime directory sits in /tmp and holds the console output of
+# whatever the agent did. The secrets themselves are written 0600, but the rest
+# was 0644 in a world-traversable directory, so another account could read an
+# agent's entire console log.
+$B rm permcase --force >/dev/null 2>&1
+$B run "$IMAGE" --name permcase --detach --no-tty -- \
+  /bin/sh -c 'echo SENSITIVE_AGENT_OUTPUT; sleep 60' >/dev/null 2>&1
+sleep 3
+check "the runtime directory is owner-only" "^drwx------" \
+  "$(stat -f '%Sp' /tmp/airlock-permcase 2>&1)"
+check "so is the state directory" "^drwx------" "$(stat -f '%Sp' "$HOME/.airlock" 2>&1)"
+# The control: it has to still work through its own tightened directory.
+check "control: the sandbox still works" "EXEC_OK" \
+  "$($B exec permcase -- /bin/sh -c 'echo EXEC_OK' 2>&1)"
+check "and its console output is still readable by its owner" "SENSITIVE_AGENT_OUTPUT" \
+  "$($B logs permcase 2>&1)"
+$B rm permcase --force >/dev/null 2>&1
+
 echo "== DNS over TCP is policed like DNS over UDP =="
 
 # The resolver answers on TCP as well as UDP, and a gate applied to only one of

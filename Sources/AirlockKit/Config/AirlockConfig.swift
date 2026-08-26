@@ -58,8 +58,7 @@ public struct AirlockConfig: Codable, Sendable, Equatable {
     }
 
     public func save(_ paths: AirlockPaths = AirlockPaths()) throws {
-        try FileManager.default.createDirectory(
-            at: paths.root, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: paths.root)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(self).write(to: Self.path(paths), options: .atomic)

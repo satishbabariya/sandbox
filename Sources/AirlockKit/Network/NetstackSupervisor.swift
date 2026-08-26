@@ -116,8 +116,7 @@ public actor NetstackSupervisor {
         guard FileManager.default.isExecutableFile(atPath: binary.path) else {
             throw NetstackError.binaryNotFound(binary)
         }
-        try FileManager.default.createDirectory(
-            at: config.runtimeDirectory, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: config.runtimeDirectory)
 
         let gatewaySocket = config.runtimeDirectory.appending(path: "net.sock")
         let clientSocket = config.runtimeDirectory.appending(path: "guest.sock")

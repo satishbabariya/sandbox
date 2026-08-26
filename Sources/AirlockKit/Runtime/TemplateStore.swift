@@ -39,8 +39,7 @@ public struct TemplateStore: Sendable {
         if exists(name), !overwrite {
             throw TemplateError.alreadyExists(name)
         }
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
+        try createPrivateDirectory(at: directory)
 
         let destination = path(name)
         try? FileManager.default.removeItem(at: destination)
