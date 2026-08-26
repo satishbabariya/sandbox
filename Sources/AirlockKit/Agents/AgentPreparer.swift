@@ -82,6 +82,19 @@ public actor AgentPreparer {
             onProgress(.installing(step: index + 1, of: steps.count, command: command))
         }
 
+        // Building an agent runs a VM for as long as its install steps take,
+        // which is minutes. Until this was armed, Ctrl-C during that did
+        // nothing at all -- the run ignored SIGINT, and a SIGTERM that did
+        // land left the build's gateway running with no sandbox to serve.
+        let interrupted = SignalTrap {
+            Task {
+                await sandbox.stop()
+                Darwin.exit(130)  // 128 + SIGINT, what a shell reports for Ctrl-C.
+            }
+        }
+        interrupted.arm()
+        defer { interrupted.disarm() }
+
         try await sandbox.start(gatewayBinary: gatewayBinary)
         let status = try await sandbox.wait()
         await sandbox.stop()

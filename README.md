@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 126 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 130 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -122,6 +122,7 @@ default for being awkward.
 | Kit-declared file containing `$HOME` and a backtick | written verbatim at the declared mode |
 | Kit-declared `background: true` command | daemon still serving when the agent runs |
 | Five sandboxes started at once | all completed; no leftover gateway or supervisor |
+| Ctrl-C during an agent build | stops, exits 130, leaves no gateway |
 | A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service airlock ships no preset for |
 | Kit `agentInstructions`, no `--clone` | withheld, and said so; your tree gains no file |
 | The same kit with `--clone` | delivered into the agent's own tree |

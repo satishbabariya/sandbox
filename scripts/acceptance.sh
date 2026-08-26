@@ -14,6 +14,15 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# Counting the processes a sandbox owns. Defined up here because more than one
+# section needs them, and a helper defined below its first use is only a
+# problem the day somebody adds a case above it.
+count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
+count_supervisors() { pgrep -f "airlock supervise" 2>/dev/null | wc -l | tr -d " "; }
+
+AGENTS_DIR="$HOME/.airlock/agents"
+mkdir -p "$AGENTS_DIR"
+
 B="${AIRLOCK_BIN:-.build/debug/airlock}"
 # Absolute, because a case that runs airlock from a workspace it just created
 # has to cd there first, and a relative path stops resolving the moment it does.
@@ -148,6 +157,40 @@ check "a symlink out of the share does not resolve" "No such file" "$out"
 check "the symlink is a plain write into the workspace" "outside.txt" \
   "$(readlink "$FSW/inside/escape" 2>&1)"
 rm -rf "$FSW"
+
+echo "== a build can be interrupted =="
+
+# Building an agent runs a VM for as long as its install steps take, which is
+# minutes. Ctrl-C during that did nothing: the run ignored SIGINT, and a
+# SIGTERM that did land left the build's gateway running with no sandbox.
+rm -f "$AGENTS_DIR/acceptslow.json"
+cat >"$AGENTS_DIR/acceptslow.json" <<'PROFILE'
+{"name":"acceptslow","displayName":"slow install","image":"docker.io/library/alpine:3.20",
+ "install":["echo INSTALL_STARTED; sleep 600"],
+ "command":["/bin/sh","-c","echo NEVER_REACHED"]}
+PROFILE
+rm -rf "$HOME/.airlock/cache/agents/acceptslow" 2>/dev/null || true
+SLOW_GW=$(count_gateways)
+$B run acceptslow --no-tty -- /bin/true >/dev/null 2>&1 &
+SLOW_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  [ "$(count_gateways)" -gt "$SLOW_GW" ] && break
+  sleep 2
+done
+check "control: the build is running" "yes" \
+  "$([ "$(count_gateways)" -gt "$SLOW_GW" ] && echo yes || echo no)"
+
+kill -INT "$SLOW_PID" 2>/dev/null
+for _ in 1 2 3 4 5 6; do kill -0 "$SLOW_PID" 2>/dev/null || break; sleep 1; done
+check_absent "SIGINT stops it" "yes" \
+  "$(kill -0 "$SLOW_PID" 2>/dev/null && echo yes || echo no)"
+wait "$SLOW_PID" 2>/dev/null
+# 128 + SIGINT, which is what a shell reports for Ctrl-C.
+check "and it exits like an interrupted command" "130" "$?"
+sleep 2
+check "leaving no gateway behind" "yes" \
+  "$([ "$(count_gateways)" -le "$SLOW_GW" ] && echo yes || echo no)"
+rm -f "$AGENTS_DIR/acceptslow.json"
 
 echo "== a secret that cannot be read says so instead of waiting =="
 
@@ -496,8 +539,6 @@ check "another sandbox cannot reach it at the same address" "unreachable" \
 
 echo "== cleanup =="
 
-count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
-count_supervisors() { pgrep -f "airlock supervise" 2>/dev/null | wc -l | tr -d " "; }
 # Other sandboxes may legitimately be running; compare against a baseline
 # rather than assuming this machine is otherwise idle.
 BASELINE_GATEWAYS=$(count_gateways)
@@ -590,8 +631,6 @@ echo "== provisioned files and startup commands =="
 # Content is deliberately hostile: a quote, a $, and a backtick. If any of it
 # were interpolated into the generated script rather than encoded, this either
 # corrupts the file or executes in the guest's own bootstrap.
-AGENTS_DIR="$HOME/.airlock/agents"
-mkdir -p "$AGENTS_DIR"
 rm -f "$AGENTS_DIR/acceptprov.json"
 cat >"$AGENTS_DIR/acceptprov.json" <<'PROFILE'
 {"name":"acceptprov","displayName":"provisioning acceptance",
