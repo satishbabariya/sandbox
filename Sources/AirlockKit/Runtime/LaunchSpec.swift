@@ -37,6 +37,10 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var mcpConfigPath: String?
     /// Drop to this unprivileged user before running the command.
     public var runAsUser: String?
+    /// Files written into the guest before the command runs.
+    public var files: [GuestFile] = []
+    /// Commands run as root at every start.
+    public var startup: [StartupCommand] = []
 
     public init(
         name: String,
@@ -105,6 +109,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             mcp: mcp,
             mcpConfigPath: mcpConfigPath,
             runAsUser: runAsUser,
+            files: files,
+            startup: startup,
             preparedRootfs: preparedRootfs.map { URL(filePath: $0) },
             terminal: terminal,
             privileged: privileged,

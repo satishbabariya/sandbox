@@ -247,6 +247,8 @@ struct RunCommand: AsyncParsableCommand {
             runAsUser: profile?.runAsUser
         )
         launch.environment = profile?.environment ?? [:]
+        launch.files = profile?.files ?? []
+        launch.startup = profile?.startup ?? []
         // An agent with no explicit workspace should see the directory the
         // user is standing in — that is what they mean by running it here.
         if let workspace {

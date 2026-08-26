@@ -6,6 +6,57 @@ import Foundation
 /// which image, which egress rules, or which credential the agent needs. A
 /// profile carries all three, and `--allow` on the command line adds to it
 /// rather than replacing it.
+/// A file written into the guest at every start.
+///
+/// Staged as content rather than as a host path on purpose: a kit that ships a
+/// launcher script has to be able to place it without the user first
+/// materialising it somewhere on their own disk.
+public struct GuestFile: Codable, Sendable, Equatable {
+    public var path: String
+    public var content: String
+    /// Octal mode, as a string so a leading zero survives YAML.
+    public var mode: String?
+
+    public init(path: String, content: String, mode: String? = nil) {
+        self.path = path
+        self.content = content
+        self.mode = mode
+    }
+}
+
+/// A command run as root at every sandbox start.
+///
+/// Decodes either as a bare argv array or as an object with `background`, so a
+/// profile written by hand can stay terse while a kit that starts a daemon can
+/// say so.
+public struct StartupCommand: Codable, Sendable, Equatable {
+    public var argv: [String]
+    /// Start it and move on, rather than waiting for it to exit. A helper
+    /// daemon never returns, so waiting would hold the sandbox before the
+    /// agent ever ran.
+    public var background: Bool
+
+    public init(argv: [String], background: Bool = false) {
+        self.argv = argv
+        self.background = background
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case argv, background
+    }
+
+    public init(from decoder: any Decoder) throws {
+        if let bare = try? decoder.singleValueContainer().decode([String].self) {
+            self.init(argv: bare)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            argv: try c.decode([String].self, forKey: .argv),
+            background: try c.decodeIfPresent(Bool.self, forKey: .background) ?? false)
+    }
+}
+
 public struct AgentProfile: Codable, Sendable, Equatable {
     public var name: String
     public var displayName: String
@@ -42,6 +93,17 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     public var mcp: [MCPServer]
     /// Where this agent reads its MCP configuration, inside the guest.
     public var mcpConfigPath: String?
+    /// Files written into the guest before the agent runs.
+    public var files: [GuestFile]
+    /// Commands run as root at every start, after the files are written and
+    /// before privilege is dropped.
+    ///
+    /// Distinct from `install`, which runs once and is baked into the cached
+    /// rootfs. Startup work is what cannot be cached: reconciling state,
+    /// starting a helper daemon, reacting to what the host mounted this time.
+    /// Each entry is an argv, so nothing is re-parsed by a shell it did not
+    /// come from.
+    public var startup: [StartupCommand]
 
     public init(
         name: String,
@@ -56,7 +118,9 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         docker: Bool = false,
         mcp: [MCPServer] = [],
         mcpConfigPath: String? = nil,
-        runAsUser: String? = nil
+        runAsUser: String? = nil,
+        files: [GuestFile] = [],
+        startup: [StartupCommand] = []
     ) {
         self.name = name
         self.displayName = displayName
@@ -71,6 +135,33 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
         self.runAsUser = runAsUser
+        self.files = files
+        self.startup = startup
+    }
+
+    /// Decoded field by field with defaults rather than by the synthesised
+    /// initialiser, for two reasons. A profile written by hand should only have
+    /// to state what it wants, not every empty list. And a profile written by
+    /// an older airlock must keep loading after a field is added -- the
+    /// registry drops anything that fails to decode, so a strict decode would
+    /// silently make a user's imported kits disappear on upgrade.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        image = try c.decode(String.self, forKey: .image)
+        displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? name
+        install = try c.decodeIfPresent([String].self, forKey: .install) ?? []
+        command = try c.decodeIfPresent([String].self, forKey: .command) ?? []
+        allow = try c.decodeIfPresent([String].self, forKey: .allow) ?? []
+        secrets = try c.decodeIfPresent([String].self, forKey: .secrets) ?? []
+        mounts = try c.decodeIfPresent([String].self, forKey: .mounts) ?? []
+        environment = try c.decodeIfPresent([String: String].self, forKey: .environment) ?? [:]
+        docker = try c.decodeIfPresent(Bool.self, forKey: .docker) ?? false
+        mcp = try c.decodeIfPresent([MCPServer].self, forKey: .mcp) ?? []
+        mcpConfigPath = try c.decodeIfPresent(String.self, forKey: .mcpConfigPath)
+        runAsUser = try c.decodeIfPresent(String.self, forKey: .runAsUser)
+        files = try c.decodeIfPresent([GuestFile].self, forKey: .files) ?? []
+        startup = try c.decodeIfPresent([StartupCommand].self, forKey: .startup) ?? []
     }
 
     /// Everything the sandbox must be able to reach: the agent's own rules plus

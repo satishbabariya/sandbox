@@ -319,8 +319,9 @@ gateway — no daemon to manage, and no shared component between sandboxes.
 ## Importing Docker Sandboxes kits
 
 ```console
-$ airlock kit inspect ./aider      # what it would become
-$ airlock kit import ./aider       # then: airlock run aider
+$ airlock kit inspect ./aider                  # what it would become
+$ airlock kit inspect ./aider --with ./neovim  # with a mixin layered on
+$ airlock kit import ./aider                   # then: airlock run aider
 ```
 
 Kits are the extension format `sbx` uses, and there is a body of existing ones.
@@ -328,12 +329,24 @@ airlock reads a faithful subset and **reports what it cannot honour** rather
 than quietly producing a sandbox the kit author did not describe — a dropped
 deny rule would be a weaker sandbox than the one they wrote.
 
-Against the 41 kits in `docker/sbx-kits-contrib`: **21 sandbox kits translate,
-20 mixins are correctly refused** (they are meant to be composed, and airlock
-has no composition model), 0 parse errors.
+Measured against all 41 kits in `docker/sbx-kits-contrib`: **21 sandbox kits
+translate and all 20 mixins compose onto one**, with no parse errors. Across
+that corpus, 16 declarations are reported as unhonoured, all of one of two
+kinds:
 
-Not carried across, and said so at import time: `setup.startup` (commands on
-every start), `setup.files`, `extends`, `mixins`, and OAuth credential flows.
+| Not carried across | Kits | Why |
+|---|---|---|
+| `agentInstructions` | 12 | Delivering it means writing into the working tree, which airlock will not do to your files |
+| OAuth credential flows | 4 | airlock reuses a sign-in already on the host but does not perform the flow itself |
+
+Everything else translates: `permissions.network`, `credentials` with a
+binding, `environment`, `setup.install`, `setup.files` (written at the declared
+mode), and `setup.startup` — including `background: true` commands, which are
+started and left running rather than waited for.
+
+Composition follows the same rules as `sbx`: allow rules union (a mixin can
+only widen egress, never narrow it), install and startup concatenate with the
+base first, and environment and files are keyed with the mixin winning.
 
 ## Templates
 
@@ -442,13 +455,14 @@ disagreed with the enforcement point would be worse than no CLI.
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
 file, templates and snapshots, Docker kit import and mixin composition,
-interactive terminals, `policy log`, `top`, `doctor`, `kernel install`.
+interactive terminals, `policy log`, `top`, `doctor`, `kernel install`,
+provisioned files and startup commands (including background daemons).
 
-**Not yet:** dynamic filesystem approval (`VZHotplugProvider`), full kit-format
-compatibility, host-side MCP gateway parity with sbx (a deliberate divergence —
-see above), OAuth flows beyond a host sign-in already present (airlock reuses
-one but does not perform the sign-in itself), kit `extends` chains, a TUI, x86
-emulation.
+**Not yet:** dynamic filesystem approval (`VZHotplugProvider`), kit
+`agentInstructions`, host-side MCP gateway parity with sbx (a deliberate
+divergence — see above), OAuth flows beyond a host sign-in already present
+(airlock reuses one but does not perform the sign-in itself), kit `extends`
+chains, a TUI, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation

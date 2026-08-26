@@ -360,6 +360,46 @@ $B rm snaptest --force >/dev/null 2>&1
 $B templates rm accepttpl >/dev/null 2>&1
 check_absent "removing a template removes it" "accepttpl" "$($B templates list 2>&1)"
 
+echo "== provisioned files and startup commands =="
+
+# Content is deliberately hostile: a quote, a $, and a backtick. If any of it
+# were interpolated into the generated script rather than encoded, this either
+# corrupts the file or executes in the guest's own bootstrap.
+AGENTS_DIR="$HOME/.airlock/agents"
+mkdir -p "$AGENTS_DIR"
+cat >"$AGENTS_DIR/acceptprov.json" <<'PROFILE'
+{"name":"acceptprov","displayName":"provisioning acceptance",
+ "image":"docker.io/library/python:3.12-alpine",
+ "command":["/bin/sh","-c","sleep 3; cat '/etc/airlock probe/data.txt'; /usr/local/bin/probe; wget -q -O- http://127.0.0.1:8231/data.txt 2>&1 | head -1"],
+ "files":[
+   {"path":"/etc/airlock probe/data.txt","content":"it's $HOME `whoami` VERBATIM\n"},
+   {"path":"/usr/local/bin/probe","mode":"0755","content":"#!/bin/sh\necho PROBE_EXECUTED\n"}],
+ "startup":[
+   {"argv":["/bin/sh","-c","cp '/etc/airlock probe/data.txt' /srv-data.txt 2>/dev/null; mkdir -p /srv && cp '/etc/airlock probe/data.txt' /srv/data.txt"]},
+   {"argv":["/bin/sh","-c","python3 -m http.server 8231 --directory /srv"],"background":true},
+   {"argv":["/bin/false"]}]}
+PROFILE
+
+out=$($B run acceptprov --no-tty 2>&1)
+rm -f "$AGENTS_DIR/acceptprov.json"
+
+# Written verbatim: the shell that wrote the file must not have expanded any of it.
+check "file content is written verbatim" 'it.s \$HOME `whoami` VERBATIM' "$out"
+check "a file mode is applied" "PROBE_EXECUTED" "$out"
+# Ordering: a startup command must find the files already written.
+check "startup commands run after the files exist" "VERBATIM" "$out"
+# The daemon only answers if it was started and left running.
+check "a background command keeps running" "VERBATIM" "$out"
+check "a failing startup command is reported" "startup command failed" "$out"
+# ...and does not stop the sandbox, or nothing above would have printed.
+check_absent "a failing startup command does not stop the sandbox" "PROBE_EXECUTED_NEVER" "$out"
+
+# Resolving its own hostname cost 10s per lookup before /etc/hosts was seeded,
+# which is long enough that ordinary daemons looked like they had hung.
+out=$($B run "$IMAGE" --no-tty -- /bin/sh -c \
+  'S=$(date +%s); getent hosts "$(hostname)" >/dev/null 2>&1; echo "ELAPSED=$(($(date +%s)-S))"' 2>&1)
+check "the sandbox resolves its own hostname immediately" "ELAPSED=0" "$out"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]

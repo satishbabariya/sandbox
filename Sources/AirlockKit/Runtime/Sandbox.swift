@@ -45,6 +45,11 @@ public struct SandboxSpec: Sendable {
     public var mcpConfigPath: String?
     /// Drop to this unprivileged user before running the command.
     public var runAsUser: String?
+    /// Files written into the guest before the command runs.
+    public var files: [GuestFile]
+    /// Commands run as root at every start, after the files are written and
+    /// before privilege is dropped.
+    public var startup: [StartupCommand]
     /// Use this prepared ext4 image as the rootfs instead of unpacking the
     /// image fresh. Set by the agent cache.
     public var preparedRootfs: URL?
@@ -89,6 +94,8 @@ public struct SandboxSpec: Sendable {
         mcp: [MCPServer] = [],
         mcpConfigPath: String? = nil,
         runAsUser: String? = nil,
+        files: [GuestFile] = [],
+        startup: [StartupCommand] = [],
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
         hostTerminal: Terminal? = nil,
@@ -114,6 +121,8 @@ public struct SandboxSpec: Sendable {
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
         self.runAsUser = runAsUser
+        self.files = files
+        self.startup = startup
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.hostTerminal = hostTerminal
@@ -370,6 +379,17 @@ public actor Sandbox {
                     cloned: spec.workspace != nil && spec.cloneWorkspace)
             }
 
+            // Each wrapper is applied around the last, so the one applied last
+            // is outermost and runs first. Startup is applied before files,
+            // which puts files first at run time -- a startup command that
+            // reads a file the kit declared must find it already there. Both
+            // sit outside the privilege drop, so both run as root, which is
+            // what kits assume when they write to /usr/local/bin or chown.
+            config.process.arguments = Self.startupBootstrap(
+                wrapping: config.process.arguments, startup: spec.startup)
+            config.process.arguments = Self.filesBootstrap(
+                wrapping: config.process.arguments, files: spec.files)
+
             if let dockerDisk {
                 // dockerd turns this on itself, but only if /proc/sys is
                 // writable; setting it here means the daemon finds it already
@@ -439,6 +459,13 @@ public actor Sandbox {
                 }
                 config.process.workingDirectory = spec.workspaceDestination
             }
+
+            // Applied last, so it is the outermost wrapper and runs before
+            // every other bootstrap. Anything they start -- dockerd, an MCP
+            // server, a kit's startup daemon -- would otherwise pay the same
+            // resolver timeout on its own hostname.
+            config.process.arguments = Self.hostnameBootstrap(
+                wrapping: config.process.arguments)
 
             for mount in spec.mounts {
                 // A copy mount shares a staged duplicate, so the guest can
@@ -636,12 +663,6 @@ public actor Sandbox {
             # enforced outside it, so root here buys the agent nothing beyond
             # its own sandbox.
             if command -v sudo >/dev/null 2>&1; then
-              # sudo resolves its own hostname and warns loudly when it cannot,
-              # which looks like a failure on every single invocation.
-              HOSTNAME_NOW=$(hostname 2>/dev/null)
-              if [ -n "$HOSTNAME_NOW" ] && ! grep -qw "$HOSTNAME_NOW" /etc/hosts 2>/dev/null; then
-                echo "127.0.0.1 $HOSTNAME_NOW" >>/etc/hosts 2>/dev/null || true
-              fi
               mkdir -p /etc/sudoers.d
               echo "$RUN_AS ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/airlock 2>/dev/null || true
               chmod 0440 /etc/sudoers.d/airlock 2>/dev/null || true
@@ -704,6 +725,93 @@ public actor Sandbox {
         "GIT_SSL_CAINFO": "/etc/ssl/certs/ca-certificates.crt",
         "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
     ]
+
+    /// Wrap the guest command so the sandbox's own hostname resolves locally.
+    ///
+    /// The guest is given a generated hostname that exists in no zone, and the
+    /// gateway is its only resolver, so resolving it goes out to the gateway
+    /// and is refused -- after the libc resolver has spent its full timeout
+    /// retrying. Measured at 10s per lookup, and an unreasonable amount of
+    /// ordinary software resolves its own hostname on startup: sudo does it on
+    /// every invocation, and Python's HTTPServer does it between bind() and
+    /// listen(), so `python3 -m http.server` sat there with a bound socket
+    /// refusing connections until it completed.
+    static func hostnameBootstrap(wrapping command: [String]) -> [String] {
+        guard !command.isEmpty else { return command }
+        let script = """
+            HOST=$(hostname 2>/dev/null)
+            if [ -n "$HOST" ] && ! grep -qw "$HOST" /etc/hosts 2>/dev/null; then
+              echo "127.0.0.1 $HOST" >>/etc/hosts 2>/dev/null || true
+            fi
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
+    }
+
+    /// Quote a string so a POSIX shell reads it as one literal word.
+    ///
+    /// Kit content is arbitrary -- launcher scripts, JSON, shell one-liners --
+    /// so anything interpolated into a generated script has to be quoted, or a
+    /// quote in a kit becomes command injection into the guest's own bootstrap.
+    static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Wrap the guest command so declared files exist before it runs.
+    ///
+    /// Content travels base64-encoded. It is arbitrary text -- quotes,
+    /// newlines, `$`, backticks -- and base64's alphabet cannot terminate the
+    /// quoting or be re-read by the shell, which no amount of escaping the raw
+    /// bytes would guarantee.
+    static func filesBootstrap(wrapping command: [String], files: [GuestFile]) -> [String] {
+        guard !command.isEmpty, !files.isEmpty else { return command }
+
+        var lines: [String] = []
+        for file in files {
+            let path = shellQuote(file.path)
+            let encoded = Data(file.content.utf8).base64EncodedString()
+            lines.append("mkdir -p \"$(dirname \(path))\" 2>/dev/null || true")
+            // Written to a temporary neighbour and moved into place, so a
+            // consumer never sees a half-written file.
+            lines.append("printf %s \(shellQuote(encoded)) | base64 -d > \(path).airlock-part")
+            if let mode = file.mode, !mode.isEmpty {
+                lines.append("chmod \(shellQuote(mode)) \(path).airlock-part 2>/dev/null || true")
+            }
+            lines.append("mv -f \(path).airlock-part \(path)")
+        }
+        lines.append("exec \"$@\"")
+        return ["/bin/sh", "-c", lines.joined(separator: "\n"), "airlock"] + command
+    }
+
+    /// Wrap the guest command so startup commands run first, as root.
+    ///
+    /// A failing startup command does not stop the sandbox. These reconcile
+    /// state and start helpers; refusing to launch the agent because a helper
+    /// declined would make a sandbox less useful than one without the kit.
+    /// The failure is reported so it is not silent.
+    static func startupBootstrap(wrapping command: [String], startup: [StartupCommand])
+        -> [String]
+    {
+        let runnable = startup.filter { !$0.argv.isEmpty }
+        guard !command.isEmpty, !runnable.isEmpty else { return command }
+
+        var lines: [String] = []
+        for (index, step) in runnable.enumerated() {
+            let quoted = step.argv.map(shellQuote).joined(separator: " ")
+            if step.background {
+                // A daemon's output would otherwise interleave with the
+                // agent's, so it goes to a log the user can read afterwards.
+                let log = "/tmp/airlock-startup-\(index).log"
+                lines.append("\(quoted) >\(log) 2>&1 &")
+            } else {
+                lines.append(
+                    "\(quoted) || echo \"airlock: startup command failed: "
+                        + "\(step.argv[0])\" >&2")
+            }
+        }
+        lines.append("exec \"$@\"")
+        return ["/bin/sh", "-c", lines.joined(separator: "\n"), "airlock"] + command
+    }
 
     /// Wrap the guest command so the CA is appended to the system bundle before
     /// it runs.

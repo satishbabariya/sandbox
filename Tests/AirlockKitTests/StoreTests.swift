@@ -493,8 +493,8 @@ struct KitTests {
         #expect(result.notes.contains { $0.contains("blocked.example.com") })
     }
 
-    @Test("startup commands are reported as unsupported")
-    func startupIsReported() throws {
+    @Test("startup commands are translated, keeping argv and background intact")
+    func startupIsTranslated() throws {
         let parsed = try spec(
             """
             name: demo
@@ -505,9 +505,48 @@ struct KitTests {
               startup:
                 - command: ["do", "a thing"]
                   background: true
+                - command: "echo hello"
             """)
         let result = try KitTranslator.translate(parsed)
-        #expect(result.unsupported.contains { $0.contains("setup.startup") })
+
+        #expect(!result.unsupported.contains { $0.contains("setup.startup") })
+        #expect(result.profile.startup.count == 2)
+        // argv is carried across as argv: "a thing" is one word, and joining it
+        // into a shell string would split it into two.
+        #expect(result.profile.startup[0].argv == ["do", "a thing"])
+        #expect(result.profile.startup[0].background)
+        // A shell-string command has to be handed to a shell to mean anything.
+        #expect(result.profile.startup[1].argv == ["/bin/sh", "-c", "echo hello"])
+        #expect(!result.profile.startup[1].background)
+    }
+
+    @Test("declared files are translated with their mode")
+    func filesAreTranslated() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            setup:
+              files:
+                - path: /usr/local/bin/launch
+                  mode: "0755"
+                  content: |
+                    #!/bin/sh
+                    echo hi
+                - path: /etc/thing.conf
+            """)
+        let result = try KitTranslator.translate(parsed)
+
+        #expect(result.profile.files.count == 1)
+        #expect(result.profile.files[0].path == "/usr/local/bin/launch")
+        #expect(result.profile.files[0].mode == "0755")
+        #expect(result.profile.files[0].content.contains("echo hi"))
+        // An entry with no inline content refers to the kit's own files/ tree,
+        // which airlock does not fetch -- silently writing an empty file there
+        // would be worse than saying so.
+        #expect(result.unsupported.contains { $0.contains("/etc/thing.conf") })
     }
 
     @Test("argv install steps survive quoting")
@@ -723,11 +762,50 @@ struct KitCompositionTests {
             """
             name: noisy
             kind: mixin
-            setup:
-              startup:
-                - command: ["something"]
+            agentInstructions:
+              content: guidance
             """)
         let result = try KitComposer.compose(base: try base, mixins: [noisy])
         #expect(result.unsupported.contains { $0.hasPrefix("[noisy]") })
+    }
+
+    @Test("a mixin's startup runs after the base's, and its files win")
+    func startupAndFilesCompose() throws {
+        let layer = try spec(
+            """
+            name: layer
+            kind: mixin
+            setup:
+              startup:
+                - command: ["mixin-step"]
+              files:
+                - path: /shared
+                  content: from-mixin
+            """)
+        let result = try KitComposer.compose(base: try baseWithSetup, mixins: [layer])
+
+        // Base first: a mixin's startup work assumes the base is already up.
+        #expect(result.profile.startup.map { $0.argv[0] } == ["base-step", "mixin-step"])
+        // One entry per path, and the more specific layer decides its content.
+        #expect(result.profile.files.filter { $0.path == "/shared" }.count == 1)
+        #expect(result.profile.files.first { $0.path == "/shared" }?.content == "from-mixin")
+    }
+
+    private var baseWithSetup: KitSpec {
+        get throws {
+            try spec(
+                """
+                name: base
+                kind: sandbox
+                sandbox:
+                  image: alpine
+                setup:
+                  startup:
+                    - command: ["base-step"]
+                  files:
+                    - path: /shared
+                      content: from-base
+                """)
+        }
     }
 }

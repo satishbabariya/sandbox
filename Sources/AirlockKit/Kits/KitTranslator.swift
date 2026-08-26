@@ -91,17 +91,33 @@ public enum KitTranslator {
         for step in spec.setup?.install ?? [] {
             install.append(step.command.shellCommand)
         }
-        if let startup = spec.setup?.startup, !startup.isEmpty {
-            unsupported.append(
-                "setup.startup: \(startup.count) command(s) that run on every start "
-                    + "are not supported; fold them into the launch command")
+        // Startup commands run as root at every start. `background` is not
+        // honoured -- a command that never returns would hold the sandbox
+        // before the agent ever ran -- so those are reported rather than run.
+        var startup: [StartupCommand] = []
+        for step in spec.setup?.startup ?? [] {
+            let background = step.background ?? false
+            switch step.command {
+            case .argv(let parts) where !parts.isEmpty:
+                startup.append(StartupCommand(argv: parts, background: background))
+            case .shell(let text):
+                startup.append(
+                    StartupCommand(argv: ["/bin/sh", "-c", text], background: background))
+            case .argv:
+                continue
+            }
         }
-        if let files = spec.setup?.files, !files.isEmpty {
-            // These could be written, but silently materialising files a kit
-            // expected at specific modes is worse than saying so.
-            unsupported.append(
-                "setup.files: \(files.count) file(s) are not written; "
-                    + "add them to the image or the launch command")
+
+        var files: [GuestFile] = []
+        for entry in spec.setup?.files ?? [] {
+            guard let content = entry.content else {
+                // `source` entries point at a file in the kit's own files/
+                // tree, which airlock does not fetch.
+                unsupported.append(
+                    "setup.files[\(entry.path)] has no inline content and was not written")
+                continue
+            }
+            files.append(GuestFile(path: entry.path, content: content, mode: entry.mode))
         }
 
         if spec.ports?.isEmpty == false {
@@ -117,7 +133,9 @@ public enum KitTranslator {
             allow: allow,
             secrets: secrets,
             environment: spec.environment?.variables ?? [:],
-            docker: spec.security?.privileged ?? false
+            docker: spec.security?.privileged ?? false,
+            files: files,
+            startup: startup
         )
 
         return KitTranslation(profile: profile, notes: notes, unsupported: unsupported)

@@ -11,6 +11,8 @@ import Foundation
 ///
 /// - egress: set union, order preserved. Widening only.
 /// - install: concatenated, base first, so a mixin runs with the base present.
+/// - startup: concatenated, base first, for the same reason.
+/// - files: keyed by path, mixin wins, as for environment.
 /// - environment: later wins, since a mixin layered on top is the more
 ///   specific statement.
 /// - credentials: union by service.
@@ -58,10 +60,15 @@ public enum KitComposer {
         translated.profile.image = ""
         translated.profile.command = []
 
+        // Deliberate, not missing. An agent reads its instructions from the
+        // working directory, which for airlock is a live share of the user's
+        // own tree -- delivering this would mean a kit dropping a file into
+        // their repository. `--clone` gives the agent a tree of its own; the
+        // guidance can be committed there.
         if spec.agentInstructions?.content != nil {
             translated.unsupported.append(
-                "agentInstructions: airlock has no agent-context file; "
-                    + "the guidance is not delivered to the agent")
+                "agentInstructions: not written; it would place a file in your "
+                    + "working tree, which airlock does not do to your files")
         }
         return translated
     }
@@ -98,6 +105,22 @@ public enum KitComposer {
         var seenServer = Set(base.mcp.map(\.name))
         for server in layer.mcp where seenServer.insert(server.name).inserted {
             merged.mcp.append(server)
+        }
+
+        // Startup runs base first, for the same reason install does: a mixin's
+        // startup work assumes the base is already set up.
+        merged.startup += layer.startup
+
+        // Files are keyed by path, and the mixin wins -- layering a kit on top
+        // is the more specific statement, exactly as it is for environment. A
+        // mixin that replaces the base's launcher script is doing so on
+        // purpose.
+        for file in layer.files {
+            if let existing = merged.files.firstIndex(where: { $0.path == file.path }) {
+                merged.files[existing] = file
+            } else {
+                merged.files.append(file)
+            }
         }
 
         // Privilege is a union: if any layer needs it, the sandbox needs it.
