@@ -375,7 +375,28 @@ struct RunCommand: AsyncParsableCommand {
         defer { trap.disarm() }
 
         Self.trace("pre-start", since: &mark)
-        try await sandbox.start(gatewayBinary: gateway)
+        do {
+            try await sandbox.start(gatewayBinary: gateway)
+        } catch {
+            // A target that was not an agent was treated as an image, so a
+            // mistyped agent name surfaces as whatever the registry said about
+            // an image nobody meant to pull -- an HTTP 401 for `airlock run
+            // clade`. Say what was actually looked for.
+            if profile == nil, let target = self.target ?? config.defaultAgent {
+                let names = registry.all().map(\.name).sorted()
+                throw CleanExit.message(
+                    """
+                    could not start '\(target)'
+
+                    It is not a known agent, so it was treated as an image \
+                    reference (\(image)), and pulling that failed:
+                      \(error)
+
+                    agents: \(names.joined(separator: ", "))
+                    """)
+            }
+            throw error
+        }
         Self.trace("start total", since: &mark)
         for forward in forwards {
             FileHandle.standardError.write(

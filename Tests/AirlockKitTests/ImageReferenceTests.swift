@@ -9,8 +9,19 @@ import Testing
 struct ImageReferenceTests {
     @Test("a bare name is a Docker Hub official image")
     func bareName() {
-        #expect(ImageReference.normalised("alpine") == "docker.io/library/alpine")
+        #expect(ImageReference.normalised("alpine") == "docker.io/library/alpine:latest")
         #expect(ImageReference.normalised("alpine:3.20") == "docker.io/library/alpine:3.20")
+    }
+
+    /// An untagged reference is what a user types first, and the image store
+    /// rejects one outright rather than assuming anything.
+    @Test("a reference with no tag gets latest")
+    func defaultTag() {
+        #expect(ImageReference.normalised("myorg/app") == "docker.io/myorg/app:latest")
+        #expect(ImageReference.normalised("ghcr.io/o/i") == "ghcr.io/o/i:latest")
+        // A registry port is not a tag, and appending one after it would be a
+        // reference to a host that does not exist.
+        #expect(ImageReference.normalised("localhost:5000/dev/app") == "localhost:5000/dev/app:latest")
     }
 
     /// The case that made 14 of the 21 kits in the corpus fail to run: "docker"
@@ -20,7 +31,8 @@ struct ImageReferenceTests {
         #expect(
             ImageReference.normalised("docker/sandbox-templates:shell-docker")
                 == "docker.io/docker/sandbox-templates:shell-docker")
-        #expect(ImageReference.normalised("nanoco/nanoclaw") == "docker.io/nanoco/nanoclaw")
+        #expect(
+            ImageReference.normalised("nanoco/nanoclaw") == "docker.io/nanoco/nanoclaw:latest")
     }
 
     /// A first segment that looks like a host is a registry and must be left
@@ -30,13 +42,15 @@ struct ImageReferenceTests {
         for reference in [
             "docker.io/library/alpine:3.20",
             "ghcr.io/apple/containerization/vminit:0.41.0",
-            "quay.io/podman/hello",
+            "quay.io/podman/hello:latest",
             "registry.example.com:5000/team/app:v1",
-            "localhost:5000/dev/app",
-            "localhost/dev/app",
+            "registry.example.com:5000/team/app:v1",
         ] {
             #expect(ImageReference.normalised(reference) == reference)
         }
+        // A registry with no tag still gains one, but keeps its registry.
+        #expect(ImageReference.normalised("localhost:5000/dev/app") == "localhost:5000/dev/app:latest")
+        #expect(ImageReference.normalised("localhost/dev/app") == "localhost/dev/app:latest")
     }
 
     /// A digest is part of the identity of the image; losing or mangling it
