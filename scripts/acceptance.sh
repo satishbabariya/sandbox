@@ -125,6 +125,48 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
   wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
 check_absent "there is no IPv6 way out" "ESCAPED" "$out"
 
+echo "== the guest cannot publish itself to the host =="
+
+# Upstream serves its port-forwarding control API inside the virtual network,
+# so a VM can ask for forwards. The guest is the untrusted party here and the
+# endpoint needs no credential: a sandbox with no allow rules opened a listener
+# on the host at *:19099 -- every interface, not loopback -- pointed at a
+# service of its own, which `airlock ports` did not show because airlock had
+# published nothing.
+$B rm exposecase --force >/dev/null 2>&1
+$B run docker.io/library/python:3.12-alpine --name exposecase --detach --no-tty -- /bin/sh -c '
+  mkdir -p /srv && echo GUEST_PUBLISHED_ITSELF >/srv/index.html
+  (cd /srv && python3 -m http.server 8099 >/dev/null 2>&1) &
+  sleep 2
+  wget -T6 -q -O- --post-data="{\"local\":\":19099\",\"remote\":\"192.168.127.2:8099\"}" \
+    --header="Content-Type: application/json" \
+    http://192.168.127.1/services/forwarder/expose >/dev/null 2>&1
+  sleep 60' >/dev/null 2>&1
+sleep 6
+
+check "the control API is not reachable from the guest" "refused" \
+  "$($B exec exposecase -- /bin/sh -c \
+     'wget -T4 -q -O- http://192.168.127.1/services/forwarder/all 2>&1' 2>&1)"
+check_absent "no host port appears" "LISTEN" \
+  "$(lsof -nP -iTCP:19099 -sTCP:LISTEN 2>/dev/null || true)"
+check_absent "and the host cannot reach the guest service" "GUEST_PUBLISHED_ITSELF" \
+  "$(curl -s --max-time 4 http://127.0.0.1:19099/index.html 2>&1 || true)"
+$B rm exposecase --force >/dev/null 2>&1
+
+# The control: closing that path must not stop the user publishing a port.
+$B rm publishcase --force >/dev/null 2>&1
+$B run docker.io/library/python:3.12-alpine --name publishcase --detach --no-tty -p 18232:8232 -- \
+  /bin/sh -c 'mkdir -p /srv && echo USER_PUBLISHED_THIS >/srv/index.html && cd /srv && python3 -m http.server 8232' >/dev/null 2>&1
+for _ in 1 2 3 4 5 6 7 8; do
+  curl -sf --max-time 2 http://127.0.0.1:18232/index.html >/dev/null 2>&1 && break
+  sleep 1
+done
+check "control: a port the user published still works" "USER_PUBLISHED_THIS" \
+  "$(curl -s --max-time 6 http://127.0.0.1:18232/index.html 2>&1)"
+# ...and only on loopback, unlike the forward the guest had been able to make.
+check "and binds loopback, not every interface" "127.0.0.1:18232" "$($B ports publishcase 2>&1)"
+$B rm publishcase --force >/dev/null 2>&1
+
 echo "== SNI inspection =="
 
 # The case the resolution ledger cannot decide: one address, two names. The

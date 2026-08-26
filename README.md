@@ -73,9 +73,14 @@ Deny is evaluated before allow everywhere, including across every name sharing a
 CDN address, so a denied name cannot be laundered through a second name on the
 same IP.
 
+The gateway's own control API is not served into the sandbox. Upstream exposes
+it at `gatewayIP:80` so a VM can request port forwards; here the guest is the
+untrusted party, so it is removed. Ports are published from the host with `-p`,
+on loopback, and the guest gets no say.
+
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 103 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 108 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -101,6 +106,7 @@ default for being awkward.
 | **`ping 1.1.1.1` with no `--allow`** | `deny icmp 1.1.1.1:0 unresolved-address`; an allowed host stays pingable |
 | A resolver the guest picked itself (`nslookup … 8.8.8.8`) | unreachable |
 | IPv6 | no global address and no route; nothing to police |
+| **Guest POSTs to the gateway's forwarder API** | refused; no host port appears, while `-p` still publishes on loopback |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
