@@ -70,6 +70,25 @@ jobs:
           tar -czf "$STAGE.tar.gz" "$STAGE"
           shasum -a 256 "$STAGE.tar.gz" | tee "$STAGE.tar.gz.sha256"
 
+      # The formula pins the source tarball GitHub generates for the tag, not
+      # the binary archive above: a poured bottle would arrive without the
+      # codesigned entitlement, so Homebrew has to build from source.
+      - name: Stamp the Homebrew formula
+        run: |
+          V="${{ steps.version.outputs.value }}"
+          URL="https://github.com/${{ github.repository }}/archive/refs/tags/${V}.tar.gz"
+          # Give the tag's tarball a moment to exist, then hash the bytes
+          # Homebrew will actually download.
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$URL" -o /tmp/src.tar.gz; then break; fi
+            echo "source tarball not ready yet (attempt $attempt)"; sleep 10
+          done
+          SHA=$(shasum -a 256 /tmp/src.tar.gz | cut -d" " -f1)
+          sed -i '' "s|^  url .*|  url \"${URL}\"|" packaging/airlock.rb
+          sed -i '' "s|^  sha256 .*|  sha256 \"${SHA}\"|" packaging/airlock.rb
+          grep -E "^  (url|sha256)" packaging/airlock.rb
+          cp packaging/airlock.rb dist/
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
@@ -77,6 +96,7 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/airlock.rb
           body: |
             ## Install
 
