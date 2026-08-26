@@ -87,6 +87,44 @@ out=$($B run "$IMAGE" --privileged --allow '*.anthropic.com' -- /bin/sh -c \
    wget -T 8 -q -O /dev/null http://$IP && echo ESCAPED || echo BLOCKED" 2>&1)
 check "privileged root cannot escape" "BLOCKED" "$out"
 
+echo "== egress by other protocols =="
+
+# ICMP echo carries a payload and elicits a reply, so forwarding one to any
+# address the guest names is both a reachability oracle and a channel out.
+# Upstream forwards them unconditionally: before this was gated, a sandbox with
+# no allow rules -- one airlock reports as reaching nothing -- pinged 1.1.1.1
+# successfully, and nothing appeared in the audit log.
+out=$($B run "$IMAGE" --no-tty -- /bin/sh -c \
+  'ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && echo ESCAPED || echo BLOCKED' 2>&1)
+check "ping to an address outside policy is refused" "BLOCKED" "$out"
+check_absent "and does not get out" "ESCAPED" "$out"
+
+# The control: gating ICMP must refuse what policy refuses, not break ping.
+out=$($B run "$IMAGE" --no-tty --allow example.com -- /bin/sh -c '
+  ping -c1 -W5 example.com >/dev/null 2>&1 && echo ALLOWED_OK || echo ALLOWED_BLOCKED
+  ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && echo OUTSIDE_ESCAPED || echo OUTSIDE_BLOCKED' 2>&1)
+check "control: an allowed host is still pingable" "ALLOWED_OK" "$out"
+check "while another address is not" "OUTSIDE_BLOCKED" "$out"
+
+# A refusal nobody can see is indistinguishable from a network fault.
+$B rm icmpaudit --force >/dev/null 2>&1
+$B run "$IMAGE" --no-tty --name icmpaudit -- /bin/sh -c \
+  'ping -c1 -W3 1.1.1.1 >/dev/null 2>&1' >/dev/null 2>&1
+check "the refusal is recorded" "deny  icmp 1.1.1.1" "$($B policy log icmpaudit 2>&1)"
+$B rm icmpaudit --force >/dev/null 2>&1
+
+# Naming another resolver is the obvious way around a gateway that is the only
+# one configured.
+out=$($B run "$IMAGE" --no-tty --allow example.com -- /bin/sh -c \
+  'nslookup evil.example.org 8.8.8.8 >/dev/null 2>&1 && echo RESOLVED || echo REFUSED' 2>&1)
+check "a resolver the guest picked itself is unreachable" "REFUSED" "$out"
+
+# IPv6 would be a second stack to police; the guest is given no route to one.
+out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
+  ping -6 -c1 -W3 2606:4700:4700::1111 >/dev/null 2>&1 && echo V6_ESCAPED || echo V6_BLOCKED
+  wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
+check_absent "there is no IPv6 way out" "ESCAPED" "$out"
+
 echo "== SNI inspection =="
 
 # The case the resolution ledger cannot decide: one address, two names. The

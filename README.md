@@ -50,7 +50,7 @@ Root inside the guest may flush its firewall, replace its default route, and
 unset every proxy variable. The frames still arrive at our gateway, because
 there is nowhere else to send them.
 
-### Three gates
+### Four gates
 
 1. **DNS.** The gateway is the sandbox's only resolver. A name outside policy is
    never resolved, so the guest never learns its address. Every address we *do*
@@ -58,7 +58,12 @@ there is nowhere else to send them.
 2. **Dial.** The forwarder refuses any address our resolver did not vouch for
    under an allowed name. Hardcoding an IP to skip DNS therefore fails closed
    rather than bypassing the check.
-3. **SNI.** On port 443 the ClientHello is peeked and policy applied to the
+3. **ICMP.** An echo request is gated on the same rule as a dial. It carries a
+   payload and elicits a reply, so forwarding one to any address the guest
+   named would be both a reachability oracle and a channel out. There is no
+   port, so a bare rule permits ping to a host it allows while a rule written
+   with a port does not.
+4. **SNI.** On port 443 the ClientHello is peeked and policy applied to the
    name it actually asks for. The ledger can only say which names an address
    was handed out for; on a shared CDN address that is not precise enough. The
    ClientHello is sent in the clear, so this needs no interception, no
@@ -70,7 +75,7 @@ same IP.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 96 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 103 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -93,6 +98,9 @@ default for being awkward.
 | `--secret claude` (host OAuth) | `HTTP 200` from the real API; token appears 0 times in the guest |
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 | **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
+| **`ping 1.1.1.1` with no `--allow`** | `deny icmp 1.1.1.1:0 unresolved-address`; an allowed host stays pingable |
+| A resolver the guest picked itself (`nslookup … 8.8.8.8`) | unreachable |
+| IPv6 | no global address and no route; nothing to police |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
@@ -477,8 +485,8 @@ disagreed with the enforcement point would be worse than no CLI.
 
 ## Status
 
-**Working:** agent profiles with cached environments, enforced egress (DNS gate
-+ dial gate + SNI inspection), policy audit log, named persistent sandboxes (`run --detach`,
+**Working:** agent profiles with cached environments, enforced egress (DNS, dial, ICMP
+and SNI gates), policy audit log, named persistent sandboxes (`run --detach`,
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config

@@ -1,0 +1,71 @@
+Gate ICMP on the same policy as a dial
+
+Upstream forwards ICMP echo requests unconditionally. That left a path
+out of a sandbox that airlock reports as reaching nothing: with no allow
+rules at all, the guest pinged 1.1.1.1 and got a reply, and nothing was
+written to the audit log. An echo request carries a payload and elicits a
+reply, so it is both a reachability oracle and a channel out.
+
+There is no port, so the dial is gated at port 0: a bare rule matches
+that, while a rule written with a port is about that port and does not
+grant ping.
+
+diff --git a/pkg/services/forwarder/icmp.go b/pkg/services/forwarder/icmp.go
+index fbf52f1..55a3802 100644
+--- a/pkg/services/forwarder/icmp.go
++++ b/pkg/services/forwarder/icmp.go
+@@ -1,8 +1,11 @@
+ package forwarder
+ 
+ import (
++	"net"
+ 	"sync"
+ 
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
++
+ 	log "github.com/sirupsen/logrus"
+ 	"gvisor.dev/gvisor/pkg/tcpip"
+ 	"gvisor.dev/gvisor/pkg/tcpip/header"
+@@ -14,7 +17,7 @@ type Forwarder struct {
+ 	stack   *stack.Stack
+ }
+ 
+-func ICMP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex) *Forwarder {
++func ICMP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mutex, pol *policy.Engine) *Forwarder {
+ 	return NewForwarder(s, func(r *ICMPForwarderRequest) {
+ 		localAddress := r.ID().LocalAddress
+ 
+@@ -50,6 +53,20 @@ func ICMP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mut
+ 			return
+ 		}
+ 
++		// Egress policy, on the same terms as a TCP dial. An echo request
++		// carries a payload and elicits a reply, so forwarding one to any
++		// address the guest names is both a reachability oracle and a channel
++		// out -- past a policy that had refused every name and every dial.
++		// There is no port, so port 0: a bare rule matches it, while a rule
++		// written with a port is about that port and does not grant ping.
++		if pol != nil {
++			ip := net.IP(localAddress.AsSlice())
++			if v := pol.AllowDial("icmp", ip, 0); !v.Allowed {
++				log.Infof("policy: refused icmp %s (%s)", ip, v.Reason)
++				return
++			}
++		}
++
+ 		// This is a PING request - forward it using unprivileged ICMP sockets
+ 		go handlePingRequest(s, r, localAddress, icmpHeader, pkt)
+ 	})
+diff --git a/pkg/virtualnetwork/services.go b/pkg/virtualnetwork/services.go
+index 3608e3f..6e9069c 100644
+--- a/pkg/virtualnetwork/services.go
++++ b/pkg/virtualnetwork/services.go
+@@ -41,7 +41,7 @@ func addServices(configuration *types.Configuration, s *stack.Stack, ipPool *tap
+ 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
+ 	udpForwarder := forwarder.UDP(s, translation, &natLock, configuration.Ec2MetadataAccess, pol)
+ 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpForwarder.HandlePacket)
+-	icmpForwarder := forwarder.ICMP(s, translation, &natLock)
++	icmpForwarder := forwarder.ICMP(s, translation, &natLock, pol)
+ 	s.SetTransportProtocolHandler(icmp.ProtocolNumber4, icmpForwarder.HandlePacket)
+ 
+ 	dnsMux, err := dnsServer(configuration, s, pol)
