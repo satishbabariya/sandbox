@@ -6,8 +6,13 @@
 # any claim made in the README fails to hold.
 #
 # Usage: make acceptance   (or: scripts/acceptance.sh)
+# The scripts a case runs inside the sandbox are single-quoted on purpose: the
+# expansions in them belong to the guest's shell, not this one. That is SC2016,
+# and it is the intended behaviour throughout this file.
+# shellcheck disable=SC2016
+
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 B="${AIRLOCK_BIN:-.build/debug/airlock}"
 IMAGE="${AIRLOCK_TEST_IMAGE:-docker.io/library/alpine:3.20}"
@@ -259,7 +264,10 @@ count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
 # Other sandboxes may legitimately be running; compare against a baseline
 # rather than assuming this machine is otherwise idle.
 BASELINE_GATEWAYS=$(count_gateways)
-count_dirs() { ls -d /tmp/airlock-* 2>/dev/null | wc -l | tr -d " "; }
+count_dirs() {
+  set -- /tmp/airlock-*
+  [ -e "$1" ] && echo "$#" || echo 0
+}
 
 # An ephemeral run must leave nothing behind. One stray directory per
 # invocation is invisible until there are hundreds.
