@@ -18,7 +18,8 @@ class Airlock < Formula
 
   depends_on arch: :arm64
   depends_on :macos
-  depends_on macos: :sequoia
+  # Package.swift declares macOS 26 as its minimum.
+  depends_on macos: :tahoe
   depends_on "go" => :build
 
   def install

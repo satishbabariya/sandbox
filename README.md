@@ -50,7 +50,7 @@ Root inside the guest may flush its firewall, replace its default route, and
 unset every proxy variable. The frames still arrive at our gateway, because
 there is nowhere else to send them.
 
-### Two gates
+### Three gates
 
 1. **DNS.** The gateway is the sandbox's only resolver. A name outside policy is
    never resolved, so the guest never learns its address. Every address we *do*
@@ -131,7 +131,7 @@ Being wrong about this is worse than not shipping it.
 
 ## Install
 
-Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.21+.
+Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
 
 Building from source is currently the only way to install. There is no
 published tap or release yet — the Homebrew formula in `packaging/` and the
@@ -139,10 +139,15 @@ release workflow are ready for when there is.
 
 ```console
 $ git clone <this repo> && cd airlock
-$ make build              # CLI + gateway, signed with the entitlement
+$ make install            # builds release, signs it, installs to /usr/local/bin
 $ airlock kernel install  # guest kernel, ~280 MiB download
 $ airlock doctor          # check everything at once
 ```
+
+`make install` takes `PREFIX` if `/usr/local` is not where you want it, and
+`make uninstall` removes both binaries again. To work from the checkout without
+installing anything, `make build` puts the CLI at `.build/debug/airlock`, which
+finds its gateway in the build tree.
 
 The CLI **must** be codesigned with `com.apple.security.virtualization` or
 Virtualization refuses to start the VM. `make build` always signs; a bare
@@ -439,12 +444,11 @@ arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
 file, templates and snapshots, Docker kit import and mixin composition,
 interactive terminals, `policy log`, `top`, `doctor`, `kernel install`.
 
-**Not yet:** SNI inspection (hostname precision on shared CDN addresses without
-interception), dynamic filesystem approval (`VZHotplugProvider`),
-kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
-divergence — see above), OAuth flows beyond a host sign-in already present
-(airlock reuses one but does not perform the sign-in itself), kit `extends`
-chains, a TUI, x86 emulation.
+**Not yet:** dynamic filesystem approval (`VZHotplugProvider`), full kit-format
+compatibility, host-side MCP gateway parity with sbx (a deliberate divergence —
+see above), OAuth flows beyond a host sign-in already present (airlock reuses
+one but does not perform the sign-in itself), kit `extends` chains, a TUI, x86
+emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation

@@ -68,6 +68,28 @@ install-kernel: $(KERNEL)
 	@cp $(KERNEL) $(AIRLOCK_HOME)/vmlinux-arm64
 	@echo "installed kernel to $(AIRLOCK_HOME)/vmlinux-arm64"
 
+# The CLI finds the gateway beside itself, so both go in the same bin
+# directory. Installing the debug build would work but ships an unoptimised
+# binary, so this builds release unless CONFIG says otherwise.
+PREFIX ?= /usr/local
+
+.PHONY: install
+install:
+	@$(MAKE) build CONFIG=release
+	@mkdir -p $(PREFIX)/bin
+	@cp .build/release/airlock $(PREFIX)/bin/airlock
+	@cp $(GATEWAY) $(PREFIX)/bin/gvairlock
+	@codesign -d --entitlements - $(PREFIX)/bin/airlock 2>&1 | grep -q virtualization \
+	  || { echo "ERROR: installed binary lost its entitlement"; exit 1; }
+	@echo "installed to $(PREFIX)/bin"
+	@echo "next: airlock kernel install && airlock doctor"
+
+.PHONY: uninstall
+uninstall:
+	@rm -f $(PREFIX)/bin/airlock $(PREFIX)/bin/gvairlock
+	@echo "removed airlock and gvairlock from $(PREFIX)/bin"
+	@echo "state in $(AIRLOCK_HOME) was left alone; remove it by hand if you want it gone"
+
 .PHONY: test
 test:
 	@swift test
