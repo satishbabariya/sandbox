@@ -32,6 +32,7 @@ struct DoctorCommand: AsyncParsableCommand {
         results.append(("gateway binary", checkGateway()))
         results.append(("state directory", checkStateDirectory(paths)))
         results.append(("disk space", checkDiskSpace(paths)))
+        results.append(("stray state", checkOrphans(paths)))
 
         var failures = 0
         var warnings = 0
@@ -63,6 +64,17 @@ struct DoctorCommand: AsyncParsableCommand {
             return
         }
         print("ready.")
+    }
+
+    /// Crashes and kill -9 leave runtime directories behind, and nothing else
+    /// removes them.
+    private func checkOrphans(_ paths: AirlockPaths) -> Status {
+        let orphans = PruneCommand.orphanedRuntimeDirectories(
+            store: SandboxStore(paths: paths))
+        guard !orphans.isEmpty else { return .ok("none") }
+        return .warn(
+            "\(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies") in /tmp",
+            fix: "airlock prune")
     }
 
     private func checkArchitecture() -> Status {

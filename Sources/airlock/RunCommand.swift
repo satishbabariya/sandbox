@@ -4,6 +4,7 @@ import Containerization
 import ContainerizationOS
 import Darwin
 import Foundation
+import Synchronization
 
 struct RunCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -285,6 +286,29 @@ struct RunCommand: AsyncParsableCommand {
         // shell in raw mode makes it unusable.
         defer { hostTerminal?.tryReset() }
 
+        // Ctrl-C must take the sandbox and its gateway with it. Without this
+        // the CLI dies and leaves a VM running that the user cannot see.
+        let interrupted = Mutex(false)
+        let trap = SignalTrap {
+            let alreadyHandling = interrupted.withLock { was -> Bool in
+                let previous = was
+                was = true
+                return previous
+            }
+            // A second Ctrl-C means the user is done waiting.
+            if alreadyHandling { Darwin.exit(130) }
+
+            hostTerminal?.tryReset()
+            FileHandle.standardError.write(
+                Data("\nairlock: stopping sandbox...\n".utf8))
+            Task {
+                await sandbox.stop()
+                Darwin.exit(130)
+            }
+        }
+        trap.arm()
+        defer { trap.disarm() }
+
         try await sandbox.start(gatewayBinary: gateway)
         for forward in forwards {
             FileHandle.standardError.write(
@@ -312,6 +336,14 @@ struct RunCommand: AsyncParsableCommand {
         }
 
         await sandbox.stop()
+        // An ephemeral run leaves nothing behind. Its socket directory is
+        // per-sandbox and would otherwise accumulate in /tmp forever, one per
+        // invocation.
+        if !persist {
+            for directory in paths.allDirectories(id) {
+                try? FileManager.default.removeItem(at: directory)
+            }
+        }
         if persist {
             var finished = launch.record
             finished.supervisorPID = nil

@@ -165,6 +165,34 @@ check "config deny cannot be flagged away" "BLOCKED" "$out"
 "$B" config unset deny >/dev/null 2>&1
 if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 
+echo "== cleanup =="
+
+count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
+count_dirs() { ls -d /tmp/airlock-* 2>/dev/null | wc -l | tr -d " "; }
+
+# An ephemeral run must leave nothing behind. One stray directory per
+# invocation is invisible until there are hundreds.
+"$B" prune >/dev/null 2>&1
+BEFORE_DIRS=$(count_dirs)
+"$B" run "$CLONE_IMAGE" --no-tty -- /bin/true >/dev/null 2>&1
+check "ephemeral run leaves no state" "^$BEFORE_DIRS$" "$(count_dirs)"
+
+# Ctrl-C must take the gateway with it, or every interrupted run leaks a VM.
+"$B" run "$CLONE_IMAGE" --no-tty -- /bin/sh -c "echo READY; sleep 120" >/tmp/airlock-sigint.log 2>&1 &
+SIG_PID=$!
+SPENT=0
+while ! grep -q READY /tmp/airlock-sigint.log 2>/dev/null && [ "$SPENT" -lt 120 ]; do
+  sleep 2
+  SPENT=$((SPENT + 2))
+done
+RUNNING=$(count_gateways)
+check "gateway runs while the sandbox does" "^[1-9]" "$RUNNING"
+kill -INT "$SIG_PID" 2>/dev/null
+sleep 8
+check "SIGINT stops the gateway" "^0$" "$(count_gateways)"
+rm -f /tmp/airlock-sigint.log
+"$B" prune >/dev/null 2>&1
+
 echo "== credentials =="
 
 SECRET="sk-acceptance-not-a-real-key"

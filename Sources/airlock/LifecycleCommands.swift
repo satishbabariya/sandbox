@@ -313,17 +313,43 @@ struct PruneCommand: AsyncParsableCommand {
     func run() async throws {
         let paths = AirlockPaths()
         let store = SandboxStore(paths: paths)
-        let stopped = store.list().filter { $0.state == .stopped }
-        guard !stopped.isEmpty else {
-            print("nothing to prune")
-            return
-        }
-        for record in stopped {
+        var removed = 0
+
+        for record in store.list() where record.state == .stopped {
             try? store.remove(record.name)
             for directory in paths.allDirectories(record.name) {
                 try? FileManager.default.removeItem(at: directory)
             }
             print("removed \(record.name)")
+            removed += 1
+        }
+
+        // Sweep runtime directories with no record behind them. A crash, a
+        // kill -9, or an older build that did not clean up leaves these in
+        // /tmp, and nothing else would ever remove them.
+        let orphans = Self.orphanedRuntimeDirectories(store: store)
+        for directory in orphans {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        if !orphans.isEmpty {
+            print("removed \(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
+            removed += orphans.count
+        }
+
+        if removed == 0 { print("nothing to prune") }
+    }
+
+    /// Runtime directories under /tmp whose sandbox no longer exists.
+    static func orphanedRuntimeDirectories(store: SandboxStore) -> [URL] {
+        let known = Set(store.list().map(\.name))
+        let temporary = URL(filePath: "/tmp")
+        let entries =
+            (try? FileManager.default.contentsOfDirectory(
+                at: temporary, includingPropertiesForKeys: nil)) ?? []
+        return entries.filter { url in
+            let name = url.lastPathComponent
+            guard name.hasPrefix("airlock-") else { return false }
+            return !known.contains(String(name.dropFirst("airlock-".count)))
         }
     }
 }
