@@ -70,7 +70,10 @@ same IP.
 
 ## What is verified
 
-Against live VMs on `alpine:3.20`:
+Against live VMs, by `scripts/acceptance.sh` — 65 cases, nearly all of which
+boot a real sandbox (a few check what airlock refuses before it boots one).
+Each security claim carries a control, so a case cannot pass because the thing
+it was testing never ran:
 
 | Scenario | Result |
 |---|---|
@@ -92,6 +95,10 @@ Against live VMs on `alpine:3.20`:
 | **Agent fixes a bug and proves it** | edits code, installs pytest itself, `1 passed`, host tree untouched |
 | Agent process identity | `uid=1000`, with sudo available inside its own VM |
 | **`docker compose up` inside a sandbox** | nginx served to the host through a published port |
+| `-p 18231:8231`, two servers running | published port reachable from the host; the other refused, while still serving inside the guest |
+| Agent with MCP servers and an unprivileged user | the config reaches the agent's own home |
+| Kit-declared file containing `$HOME` and a backtick | written verbatim at the declared mode |
+| Kit-declared `background: true` command | daemon still serving when the agent runs |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
