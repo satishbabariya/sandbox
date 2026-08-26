@@ -65,12 +65,7 @@ public actor AgentPreparer {
         )
 
         let steps = profile.allInstall
-        let script = steps.enumerated().map { index, command in
-            """
-            echo "airlock: [\(index + 1)/\(steps.count)] \(command.prefix(60))"
-            \(command) || { echo "airlock: install step failed: \(command)" >&2; exit 1; }
-            """
-        }.joined(separator: "\n")
+        let script = Self.installScript(for: steps)
 
         let spec = SandboxSpec(
             id: buildID,
@@ -78,7 +73,8 @@ public actor AgentPreparer {
             command: ["/bin/sh", "-lc", script],
             policy: policy,
             cpus: 4,
-            memoryInBytes: 4 * 1024 * 1024 * 1024
+            memoryInBytes: 4 * 1024 * 1024 * 1024,
+            runAsRoot: true
         )
 
         let sandbox = Sandbox(spec: spec, paths: paths, logger: logger)
@@ -125,5 +121,53 @@ public enum PrepareError: Error, CustomStringConvertible {
         case .rootfsMissing(let url):
             return "expected a built rootfs at \(url.path)"
         }
+    }
+}
+
+extension AgentPreparer {
+    /// Assemble the install steps into one script.
+    ///
+    /// Each step is handed to the shell as a file rather than spliced into a
+    /// larger script. Kit install steps are multi-line programs with `case`
+    /// blocks, command substitutions and quoting of their own: appending
+    /// `|| { ... }` to one only guards its last line, and interpolating it into
+    /// an echo to report progress truncated `$(dpkg --print-architecture)` into
+    /// an unterminated `$(` that failed to parse before anything ran.
+    ///
+    /// They are also bash programs -- `set -euo pipefail` is the near-universal
+    /// opening line -- so bash runs them where the image has it.
+    public static func installScript(for steps: [String]) -> String {
+        var lines = [
+            "set -e",
+            // Kits are written against bash; dash is a fallback for images
+            // that ship nothing else.
+            "RUNNER=sh",
+            "command -v bash >/dev/null 2>&1 && RUNNER=bash",
+        ]
+        for (index, command) in steps.enumerated() {
+            let label = Sandbox.shellQuote("[\(index + 1)/\(steps.count)] \(summary(of: command))")
+            let encoded = Sandbox.shellQuote(Data(command.utf8).base64EncodedString())
+            lines.append("printf 'airlock: %s\\n' \(label)")
+            lines.append("printf %s \(encoded) | base64 -d > /tmp/airlock-install-step")
+            lines.append(
+                "\"$RUNNER\" /tmp/airlock-install-step "
+                    + "|| { printf 'airlock: install step %s failed\\n' \(label) >&2; exit 1; }")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A one-line description of a step, for progress output.
+    ///
+    /// Comments and `set -e` lines are what most kit steps open with and say
+    /// nothing about what the step does, so the first line that looks like work
+    /// is used instead.
+    public static func summary(of command: String) -> String {
+        let interesting = command.split(separator: "\n").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }.first {
+            !$0.isEmpty && !$0.hasPrefix("#") && !$0.hasPrefix("set ")
+        }
+        let line = interesting ?? command.trimmingCharacters(in: .whitespacesAndNewlines)
+        return line.count > 60 ? String(line.prefix(59)) + "\u{2026}" : line
     }
 }

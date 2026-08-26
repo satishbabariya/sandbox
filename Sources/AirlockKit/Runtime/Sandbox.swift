@@ -45,6 +45,13 @@ public struct SandboxSpec: Sendable {
     public var mcpConfigPath: String?
     /// Drop to this unprivileged user before running the command.
     public var runAsUser: String?
+    /// Run as uid 0 regardless of the user the image declares.
+    ///
+    /// Agent images increasingly ship a non-root default user, which is right
+    /// for running an agent and wrong for building one: an install step cannot
+    /// write to /usr/local/bin. Kits say so themselves -- their install steps
+    /// carry `user: "0"`.
+    public var runAsRoot: Bool
     /// Files written into the guest before the command runs.
     public var files: [GuestFile]
     /// Commands run as root at every start, after the files are written and
@@ -97,6 +104,7 @@ public struct SandboxSpec: Sendable {
         mcp: [MCPServer] = [],
         mcpConfigPath: String? = nil,
         runAsUser: String? = nil,
+        runAsRoot: Bool = false,
         files: [GuestFile] = [],
         startup: [StartupCommand] = [],
         agentInstructions: AgentInstructions? = nil,
@@ -128,6 +136,7 @@ public struct SandboxSpec: Sendable {
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
         self.runAsUser = runAsUser
+        self.runAsRoot = runAsRoot
         self.files = files
         self.startup = startup
         self.agentInstructions = agentInstructions
@@ -344,6 +353,9 @@ public actor Sandbox {
             // The gateway is the only resolver the sandbox can reach, which is
             // what lets policy gate name resolution as well as dialling.
             config.dns = DNS(nameservers: [AirlockInterface.Defaults.gateway])
+            if spec.runAsRoot {
+                config.process.user = ContainerizationOCI.User(uid: 0, gid: 0)
+            }
             config.process.terminal = spec.terminal
             if spec.privileged {
                 config.process.capabilities = .allCapabilities
@@ -768,7 +780,12 @@ public actor Sandbox {
         guard !command.isEmpty else { return command }
         let script = """
             HOST=$(hostname 2>/dev/null)
-            if [ -n "$HOST" ] && ! grep -qw "$HOST" /etc/hosts 2>/dev/null; then
+            # Tested rather than attempted: a failing redirection is reported by
+            # the shell itself, so 2>/dev/null on the command does not suppress
+            # it, and the guest's first line of output became a permission error
+            # about a file the user never asked us to touch.
+            if [ -n "$HOST" ] && [ -w /etc/hosts ] \
+              && ! grep -qw "$HOST" /etc/hosts 2>/dev/null; then
               echo "127.0.0.1 $HOST" >>/etc/hosts 2>/dev/null || true
             fi
             exec "$@"

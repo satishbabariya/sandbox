@@ -263,8 +263,11 @@ struct RunCommand: AsyncParsableCommand {
                 profile, gatewayBinary: gateway, force: rebuild
             ) { progress in
                 if case .installing(let step, let total, let cmd) = progress {
+                    // A kit install step is a multi-line program; printing its
+                    // first 70 characters spilled a truncated `case` block
+                    // across the terminal.
                     FileHandle.standardError.write(
-                        Data("  [\(step)/\(total)] \(cmd.prefix(70))\n".utf8))
+                        Data("  [\(step)/\(total)] \(AgentPreparer.summary(of: cmd))\n".utf8))
                 }
             }
             preparedRootfs = rootfs.path(percentEncoded: false)
