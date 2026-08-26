@@ -45,7 +45,7 @@ public actor AgentPreparer {
         if force {
             try await cache.remove(profile)
         }
-        guard !profile.install.isEmpty else {
+        guard !profile.allInstall.isEmpty else {
             // Nothing to install: the image is already the environment, so
             // there is nothing worth caching.
             onProgress(.ready)
@@ -58,14 +58,15 @@ public actor AgentPreparer {
         // Install steps need the agent's own egress, and its package
         // registries, but nothing beyond that.
         let policy = try NetworkPolicy(
-            allow: profile.allow + AgentProfile.commonToolingEgress
+            allow: profile.allEgress + AgentProfile.commonToolingEgress
                 + ["deb.debian.org", "security.debian.org", "*.debian.org"],
             deny: []
         )
 
-        let script = profile.install.enumerated().map { index, command in
+        let steps = profile.allInstall
+        let script = steps.enumerated().map { index, command in
             """
-            echo "airlock: [\(index + 1)/\(profile.install.count)] \(command.prefix(60))"
+            echo "airlock: [\(index + 1)/\(steps.count)] \(command.prefix(60))"
             \(command) || { echo "airlock: install step failed: \(command)" >&2; exit 1; }
             """
         }.joined(separator: "\n")
@@ -80,8 +81,8 @@ public actor AgentPreparer {
         )
 
         let sandbox = Sandbox(spec: spec, paths: paths, logger: logger)
-        for (index, command) in profile.install.enumerated() {
-            onProgress(.installing(step: index + 1, of: profile.install.count, command: command))
+        for (index, command) in steps.enumerated() {
+            onProgress(.installing(step: index + 1, of: steps.count, command: command))
         }
 
         try await sandbox.start(gatewayBinary: gatewayBinary)

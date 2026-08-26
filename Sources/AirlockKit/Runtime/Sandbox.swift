@@ -40,6 +40,9 @@ public struct SandboxSpec: Sendable {
     public var mounts: [MountSpec]
     /// Give the agent a private git clone instead of your working tree.
     public var cloneWorkspace: Bool
+    /// MCP servers to declare to the agent, and where to write the file.
+    public var mcp: [MCPServer]
+    public var mcpConfigPath: String?
     /// Use this prepared ext4 image as the rootfs instead of unpacking the
     /// image fresh. Set by the agent cache.
     public var preparedRootfs: URL?
@@ -81,6 +84,8 @@ public struct SandboxSpec: Sendable {
         workspaceDestination: String = "/workspace",
         mounts: [MountSpec] = [],
         cloneWorkspace: Bool = false,
+        mcp: [MCPServer] = [],
+        mcpConfigPath: String? = nil,
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
         hostTerminal: Terminal? = nil,
@@ -103,6 +108,8 @@ public struct SandboxSpec: Sendable {
         self.workspaceDestination = workspaceDestination
         self.mounts = mounts
         self.cloneWorkspace = cloneWorkspace
+        self.mcp = mcp
+        self.mcpConfigPath = mcpConfigPath
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.hostTerminal = hostTerminal
@@ -272,6 +279,17 @@ public actor Sandbox {
                 config.process.arguments = spec.command
             }
 
+            // Written at startup rather than baked into the cached rootfs, so
+            // changing which servers an agent uses does not force a rebuild.
+            if let mcpPath = spec.mcpConfigPath, !spec.mcp.isEmpty,
+                let rendered = try? MCPConfiguration.render(spec.mcp)
+            {
+                config.process.arguments = Self.mcpBootstrap(
+                    wrapping: config.process.arguments,
+                    path: mcpPath,
+                    contents: rendered)
+            }
+
             if let dockerDisk {
                 config.mounts.append(
                     .block(
@@ -423,6 +441,24 @@ public actor Sandbox {
             else
               echo "airlock: --docker given but dockerd is not in this image" >&2
             fi
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
+    }
+
+    /// Write the MCP configuration, then exec.
+    ///
+    /// The JSON goes through base64 so quoting in server arguments cannot break
+    /// the shell that writes it.
+    static func mcpBootstrap(
+        wrapping command: [String], path: String, contents: String
+    ) -> [String] {
+        guard !command.isEmpty else { return command }
+        let encoded = Data(contents.utf8).base64EncodedString()
+        let script = """
+            mkdir -p "$(dirname \(path))"
+            printf %s '\(encoded)' | base64 -d > "\(path)" 2>/dev/null \
+              || echo "airlock: could not write \(path)" >&2
             exec "$@"
             """
         return ["/bin/sh", "-c", script, "airlock"] + command

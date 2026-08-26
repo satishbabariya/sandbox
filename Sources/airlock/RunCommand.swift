@@ -51,6 +51,11 @@ struct RunCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Rebuild the agent's cached environment before running.")
     var rebuild: Bool = false
 
+    @Option(
+        name: .long,
+        help: "Add an MCP server by name (filesystem, git, github, fetch); repeatable.")
+    var mcp: [String] = []
+
     @Flag(
         name: .long,
         help: "Work on a private git clone of the workspace instead of your tree.")
@@ -123,7 +128,23 @@ struct RunCommand: AsyncParsableCommand {
         // A profile's rules and any config rules are the floor; flags add to
         // them. deny is deliberately additive so a machine-wide block cannot be
         // flagged away.
-        let effectiveAllow = allow + (profile?.allow ?? []) + config.allow
+        // MCP servers run inside the sandbox, so whatever they need to reach
+        // becomes part of this sandbox's policy — a server can never reach
+        // somewhere the agent could not.
+        var servers = profile?.mcp ?? []
+        for name in mcp {
+            guard let preset = MCPServer.preset(for: name) else {
+                throw ValidationError(
+                    "unknown MCP server '\(name)'; known: "
+                        + MCPServer.presets.keys.sorted().joined(separator: ", "))
+            }
+            if !servers.contains(where: { $0.name == preset.name }) {
+                servers.append(preset)
+            }
+        }
+
+        let effectiveAllow =
+            allow + (profile?.allow ?? []) + config.allow + servers.flatMap(\.allow)
         let effectiveDeny = deny + config.deny
         let effectiveSecrets = secret + (profile?.secrets ?? []) + config.secrets
         let effectiveMounts = mount + (profile?.mounts ?? [])
@@ -160,7 +181,9 @@ struct RunCommand: AsyncParsableCommand {
 
         // Install the agent once; later runs clone the cached filesystem.
         var preparedRootfs: String?
-        if let profile, !profile.install.isEmpty {
+        var profileWithMCP = profile
+        if profileWithMCP != nil { profileWithMCP?.mcp = servers }
+        if let profile = profileWithMCP, !profile.allInstall.isEmpty {
             let preparer = AgentPreparer(paths: paths)
             let cache = RootfsCache(paths: paths)
             if rebuild || !cache.isCached(profile) {
@@ -193,7 +216,9 @@ struct RunCommand: AsyncParsableCommand {
             preparedRootfs: preparedRootfs,
             agent: profile?.name,
             ports: publish,
-            clone: effectiveClone
+            clone: effectiveClone,
+            mcp: servers,
+            mcpConfigPath: profile?.mcpConfigPath
         )
         launch.environment = profile?.environment ?? [:]
         // An agent with no explicit workspace should see the directory the

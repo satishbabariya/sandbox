@@ -25,6 +25,10 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     public var environment: [String: String]
     /// Give this agent its own dockerd.
     public var docker: Bool
+    /// MCP servers to run inside the sandbox, by preset name or full spec.
+    public var mcp: [MCPServer]
+    /// Where this agent reads its MCP configuration, inside the guest.
+    public var mcpConfigPath: String?
 
     public init(
         name: String,
@@ -36,7 +40,9 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         secrets: [String] = [],
         mounts: [String] = [],
         environment: [String: String] = [:],
-        docker: Bool = false
+        docker: Bool = false,
+        mcp: [MCPServer] = [],
+        mcpConfigPath: String? = nil
     ) {
         self.name = name
         self.displayName = displayName
@@ -48,6 +54,20 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         self.mounts = mounts
         self.environment = environment
         self.docker = docker
+        self.mcp = mcp
+        self.mcpConfigPath = mcpConfigPath
+    }
+
+    /// Everything the sandbox must be able to reach: the agent's own rules plus
+    /// whatever its MCP servers need. Keeping these together means a server can
+    /// never require a hole the profile did not declare.
+    public var allEgress: [String] {
+        allow + mcp.flatMap(\.allow)
+    }
+
+    /// Install steps for the agent and its MCP servers, in that order.
+    public var allInstall: [String] {
+        install + mcp.flatMap(\.install)
     }
 }
 
@@ -84,7 +104,8 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "statsig.anthropic.com", "sentry.io"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic"],
-            mounts: ["~/.claude:/root/.claude"]
+            mounts: ["~/.claude:/root/.claude"],
+            mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
             name: "codex",
@@ -99,7 +120,8 @@ extension AgentProfile {
             allow: ["api.openai.com", "chatgpt.com", "auth.openai.com"]
                 + commonToolingEgress + gitEgress,
             secrets: ["openai"],
-            mounts: ["~/.codex:/root/.codex"]
+            mounts: ["~/.codex:/root/.codex"],
+            mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
             name: "gemini",
@@ -117,7 +139,8 @@ extension AgentProfile {
                 "accounts.google.com",
             ] + commonToolingEgress + gitEgress,
             secrets: ["gemini"],
-            mounts: ["~/.gemini:/root/.gemini"]
+            mounts: ["~/.gemini:/root/.gemini"],
+            mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
             name: "opencode",
@@ -132,7 +155,8 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "api.openai.com", "openrouter.ai"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic"],
-            mounts: ["~/.config/opencode:/root/.config/opencode"]
+            mounts: ["~/.config/opencode:/root/.config/opencode"],
+            mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
             name: "shell",

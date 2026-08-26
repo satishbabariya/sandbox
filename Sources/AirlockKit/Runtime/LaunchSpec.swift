@@ -32,6 +32,9 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     public var ports: [String]
     /// Give the agent a private git clone rather than the working tree.
     public var clone: Bool
+    /// MCP servers to run inside the sandbox.
+    public var mcp: [MCPServer]
+    public var mcpConfigPath: String?
 
     public init(
         name: String,
@@ -51,7 +54,9 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         preparedRootfs: String? = nil,
         agent: String? = nil,
         ports: [String] = [],
-        clone: Bool = false
+        clone: Bool = false,
+        mcp: [MCPServer] = [],
+        mcpConfigPath: String? = nil
     ) {
         self.name = name
         self.image = image
@@ -71,6 +76,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.agent = agent
         self.ports = ports
         self.clone = clone
+        self.mcp = mcp
+        self.mcpConfigPath = mcpConfigPath
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -91,6 +98,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             workspaceDestination: workspaceDestination,
             mounts: mounts.compactMap(MountSpec.parse),
             cloneWorkspace: clone,
+            mcp: mcp,
+            mcpConfigPath: mcpConfigPath,
             preparedRootfs: preparedRootfs.map { URL(filePath: $0) },
             terminal: terminal,
             privileged: privileged,

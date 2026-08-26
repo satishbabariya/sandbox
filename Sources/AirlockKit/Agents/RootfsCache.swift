@@ -33,7 +33,9 @@ public actor RootfsCache {
     public nonisolated static func key(for profile: AgentProfile) -> String {
         var hasher = SHA256()
         hasher.update(data: Data(profile.image.utf8))
-        for command in profile.install {
+        // Covers MCP install steps too: adding a server must rebuild rather
+        // than silently reuse an environment without it.
+        for command in profile.allInstall {
             hasher.update(data: Data(command.utf8))
         }
         let digest = hasher.finalize()

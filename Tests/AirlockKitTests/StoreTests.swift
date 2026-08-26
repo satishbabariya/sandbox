@@ -287,3 +287,80 @@ struct AirlockConfigTests {
         #expect(throws: ConfigError.self) { try AirlockConfig(cpus: 0).validate() }
     }
 }
+
+@Suite("MCP")
+struct MCPTests {
+    @Test("renders the shape agents expect")
+    func rendersConfig() throws {
+        let servers = [
+            MCPServer(name: "git", command: "npx", args: ["-y", "server-git"]),
+            MCPServer(
+                name: "github", command: "npx", args: ["-y", "server-github"],
+                env: ["TOKEN": "sentinel"]),
+        ]
+        let json = try MCPConfiguration.render(servers)
+        let parsed =
+            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        let entries = parsed?["mcpServers"] as? [String: Any]
+
+        #expect(entries?.count == 2)
+        let git = entries?["git"] as? [String: Any]
+        #expect(git?["command"] as? String == "npx")
+        #expect(git?["args"] as? [String] == ["-y", "server-git"])
+        // A server with no env should not carry an empty object.
+        #expect(git?["env"] == nil)
+
+        let github = entries?["github"] as? [String: Any]
+        #expect((github?["env"] as? [String: String])?["TOKEN"] == "sentinel")
+    }
+
+    @Test("slashes stay readable")
+    func noEscapedSlashes() throws {
+        let json = try MCPConfiguration.render([
+            MCPServer(name: "fs", command: "npx", args: ["@scope/package"])
+        ])
+        #expect(!json.contains("\\/"), "package names should not be slash-escaped")
+        #expect(json.hasSuffix("\n"), "config files end with a newline")
+    }
+
+    @Test("a server's egress becomes the sandbox's egress")
+    func egressIsMerged() throws {
+        // A server running inside the sandbox must not be able to reach
+        // anywhere the agent could not, so its rules join the same policy.
+        let profile = AgentProfile(
+            name: "test", displayName: "Test", image: "alpine",
+            allow: ["api.example.com"],
+            mcp: [MCPServer(name: "github", command: "npx", allow: ["api.github.com"])])
+
+        #expect(profile.allEgress.contains("api.example.com"))
+        #expect(profile.allEgress.contains("api.github.com"))
+    }
+
+    @Test("MCP install steps run after the agent's own")
+    func installOrder() throws {
+        let profile = AgentProfile(
+            name: "test", displayName: "Test", image: "alpine",
+            install: ["install-agent"],
+            mcp: [MCPServer(name: "s", command: "npx", install: ["install-server"])])
+
+        // The server is installed with the agent's toolchain already present.
+        #expect(profile.allInstall == ["install-agent", "install-server"])
+    }
+
+    @Test("adding a server changes the cache key")
+    func cacheKeyCoversMCP() throws {
+        // Otherwise adding an MCP server would silently reuse an environment
+        // that does not contain it.
+        let base = AgentProfile(
+            name: "test", displayName: "Test", image: "alpine", install: ["a"])
+        var withServer = base
+        withServer.mcp = [MCPServer(name: "s", command: "npx", install: ["b"])]
+
+        #expect(RootfsCache.key(for: base) != RootfsCache.key(for: withServer))
+    }
+
+    @Test("presets exist for the common servers", arguments: ["filesystem", "git", "github", "fetch"])
+    func presetsResolve(_ name: String) throws {
+        #expect(MCPServer.preset(for: name) != nil)
+    }
+}

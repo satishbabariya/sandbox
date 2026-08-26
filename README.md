@@ -150,6 +150,30 @@ $ airlock agents edit claude   # writes ~/.airlock/agents/claude.json
 $ airlock agents cache         # what is built, and how much disk it uses
 ```
 
+## MCP servers
+
+```console
+$ airlock run claude --mcp github --mcp filesystem
+```
+
+airlock runs MCP servers **inside** the sandbox, not on the host behind a
+gateway. A server reads files and makes network calls on the agent's behalf, so
+running it inside means it is bound by the same egress policy and sees the same
+filesystem the agent does. A host-side server would be a process outside the
+boundary that the sandbox can ask to act for it — which is the thing the
+boundary exists to prevent.
+
+Whatever a server needs to reach joins that sandbox's policy, so it can never
+reach somewhere the agent could not. Servers are installed into the agent's
+cached environment, and adding one changes the cache key so the environment is
+rebuilt rather than silently reused without it.
+
+The cost is a copy per sandbox. That is the right trade for a tool whose whole
+claim is containment.
+
+Presets: `filesystem`, `git`, `github`, `fetch`. Declare others in an agent
+profile.
+
 ## Credentials the sandbox never holds
 
 ```console
@@ -285,12 +309,13 @@ disagreed with the enforcement point would be worse than no CLI.
 + dial gate), policy audit log, named persistent sandboxes (`run --detach`,
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
-arbitrary mounts, `--clone`, `--privileged`, `doctor`, `kernel install`.
+arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
+file, interactive terminals, `doctor`, `kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
 interception), dynamic filesystem approval (`VZHotplugProvider`),
-kit-format compatibility, an MCP gateway, OAuth credential flows,
-x86 emulation.
+kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
+divergence — see above), OAuth credential flows, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation
