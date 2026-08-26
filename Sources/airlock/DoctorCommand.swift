@@ -126,14 +126,18 @@ struct DoctorCommand: AsyncParsableCommand {
 
     private func checkKernel(_ paths: AirlockPaths) -> Status {
         guard FileManager.default.isReadableFile(atPath: paths.kernel.path) else {
-            return .fail("missing at \(paths.kernel.path)", fix: "run 'make install-kernel'")
+            // The binary can fetch it itself; 'make install-kernel' only works
+            // from a source tree, which someone who installed a build has not
+            // got.
+            return .fail(
+                "missing at \(paths.kernel.path)", fix: "run 'airlock kernel install'")
         }
         let size =
             (try? paths.kernel.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size > 1_000_000 else {
             return .fail(
                 "at \(paths.kernel.path) but only \(size) bytes",
-                fix: "delete it and re-run 'make install-kernel'")
+                fix: "delete it and run 'airlock kernel install'")
         }
         return .ok("\(size / 1_048_576) MiB")
     }

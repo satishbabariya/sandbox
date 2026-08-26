@@ -99,7 +99,18 @@ struct RunCommand: AsyncParsableCommand {
         help: "Grant every Linux capability inside the sandbox. Does not weaken egress policy.")
     var privileged: Bool = false
 
+    /// Phase timings, printed when AIRLOCK_TRACE is set.
+    static func trace(_ label: String, since: inout Date) {
+        guard ProcessInfo.processInfo.environment["AIRLOCK_TRACE"] != nil else { return }
+        FileHandle.standardError.write(
+            Data(
+                (("  trace " + label.padding(toLength: 22, withPad: " ", startingAt: 0))
+                    + String(format: " %6.2fs\n", Date().timeIntervalSince(since))).utf8))
+        since = Date()
+    }
+
     func run() async throws {
+        var mark = Date()
         var command = self.command
         if command.first == "--" { command.removeFirst() }
 
@@ -213,6 +224,7 @@ struct RunCommand: AsyncParsableCommand {
             }
             preparedRootfs = rootfs.path(percentEncoded: false)
         }
+        Self.trace("agent prepare", since: &mark)
 
         var launch = LaunchSpec(
             name: id,
@@ -310,7 +322,9 @@ struct RunCommand: AsyncParsableCommand {
         trap.arm()
         defer { trap.disarm() }
 
+        Self.trace("pre-start", since: &mark)
         try await sandbox.start(gatewayBinary: gateway)
+        Self.trace("start total", since: &mark)
         for forward in forwards {
             FileHandle.standardError.write(
                 Data("airlock: published \(forward)\n".utf8))
@@ -323,6 +337,7 @@ struct RunCommand: AsyncParsableCommand {
             status = try await sandbox.wait()
         }
 
+        Self.trace("wait", since: &mark)
         if showPolicyLog {
             let records = await sandbox.auditRecords()
             if records.isEmpty {
@@ -337,6 +352,7 @@ struct RunCommand: AsyncParsableCommand {
         }
 
         await sandbox.stop()
+        Self.trace("stop", since: &mark)
         // An ephemeral run leaves nothing behind. Its socket directory is
         // per-sandbox and would otherwise accumulate in /tmp forever, one per
         // invocation.

@@ -16,7 +16,7 @@ public enum SandboxError: Error, CustomStringConvertible {
         case .kernelNotFound(let url):
             return """
                 no Linux kernel at \(url.path)
-                fetch one with: make kernel
+                fetch one with: airlock kernel install
                 """
         case .notRunning:
             return "sandbox is not running"
@@ -185,8 +185,23 @@ public actor Sandbox {
         netstack?.auditLogPath
     }
 
+    /// Timing breakdown of start(), printed when AIRLOCK_TRACE is set.
+    ///
+    /// Start latency is the number a user feels on every command, and guessing
+    /// at which phase owns it wasted more time than measuring would have.
+    private func trace(_ label: String, since: inout Date) {
+        guard ProcessInfo.processInfo.environment["AIRLOCK_TRACE"] != nil else { return }
+        let elapsed = Date().timeIntervalSince(since)
+        FileHandle.standardError.write(
+            Data(
+                (("  trace " + label.padding(toLength: 22, withPad: " ", startingAt: 0))
+                    + String(format: " %6.2fs\n", elapsed)).utf8))
+        since = Date()
+    }
+
     /// Bring the sandbox up and return once its process has been started.
     public func start(gatewayBinary: URL) async throws {
+        var mark = Date()
         // A kernel image is data, not a program — readable is the right test.
         guard FileManager.default.isReadableFile(atPath: paths.kernel.path) else {
             throw SandboxError.kernelNotFound(paths.kernel)
@@ -209,6 +224,7 @@ public actor Sandbox {
         )
         let link = try await supervisor.start()
         self.netstack = supervisor
+        trace("gateway", since: &mark)
 
         // Silently starting without a credential the user asked for would
         // surface later as an opaque 401 from inside the sandbox.
@@ -269,6 +285,7 @@ public actor Sandbox {
         // 2. The VM. One interface, no vmnet, no NAT, no host route.
         let interface = try AirlockInterface(link: link, macAddress: "5a:94:ef:e4:0c:de")
 
+        trace("interface", since: &mark)
         let kernel = Kernel(path: paths.kernel, platform: .linuxArm)
         try FileManager.default.createDirectory(at: paths.images, withIntermediateDirectories: true)
         let contentStore = try LocalContentStore(path: paths.images.appending(path: "content"))
@@ -280,6 +297,7 @@ public actor Sandbox {
         // discard it when the pin moves.
         try Self.invalidateStaleInitfs(in: paths.images)
 
+        trace("stores", since: &mark)
         var mgr = try await ContainerManager(
             kernel: kernel,
             initfsReference: Self.initfsReference,
@@ -294,8 +312,15 @@ public actor Sandbox {
             try? FileManager.default.removeItem(at: containerRoot)
         }
 
+        trace("manager+initfs", since: &mark)
         let spec = self.spec
         let configure: (inout LinuxContainer.Configuration) throws -> Void = { config in
+            // Guest boot is the dominant cost of a warm start, and without the
+            // kernel's own log there is no way to see which phase owns it.
+            if ProcessInfo.processInfo.environment["AIRLOCK_TRACE"] != nil {
+                config.bootLog = .file(
+                    path: runtimeDir.appending(path: "boot.log"))
+            }
             config.cpus = spec.cpus
             config.memoryInBytes = spec.memoryInBytes
             config.interfaces = [interface]
@@ -341,7 +366,8 @@ public actor Sandbox {
                 config.process.arguments = Self.dropPrivilegeBootstrap(
                     wrapping: config.process.arguments,
                     user: user,
-                    workspace: spec.workspaceDestination)
+                    workspace: spec.workspaceDestination,
+                    cloned: spec.workspace != nil && spec.cloneWorkspace)
             }
 
             if let dockerDisk {
@@ -434,7 +460,15 @@ public actor Sandbox {
         if let prepared = spec.preparedRootfs {
             // A prepared rootfs already has the agent installed; unpacking the
             // base image again would throw that away.
-            let image = try await imageStore.get(reference: spec.image, pull: true)
+            // Only the image's config is needed here; the filesystem comes
+            // from the prepared rootfs. Asking the store to pull makes every
+            // start wait on a registry round trip for something already local.
+            let image: Containerization.Image
+            if let local = try? await imageStore.get(reference: spec.image, pull: false) {
+                image = local
+            } else {
+                image = try await imageStore.get(reference: spec.image, pull: true)
+            }
             let target = containerRoot.appending(path: "rootfs.ext4")
             try FileManager.default.createDirectory(
                 at: containerRoot, withIntermediateDirectories: true)
@@ -443,8 +477,18 @@ public actor Sandbox {
                 prepared.path(percentEncoded: false),
                 target.path(percentEncoded: false), 0)
             if cloned != 0 {
+                // A full copy of a multi-hundred-megabyte rootfs takes many
+                // seconds and happens on every start, so it is worth knowing
+                // when the clone did not take.
+                logger?.warning(
+                    "clonefile failed (errno \(errno)); copying the rootfs instead")
+                if ProcessInfo.processInfo.environment["AIRLOCK_TRACE"] != nil {
+                    FileHandle.standardError.write(
+                        Data("  trace clonefile failed, errno \(errno)\n".utf8))
+                }
                 try FileManager.default.copyItem(at: prepared, to: target)
             }
+            trace("rootfs clone", since: &mark)
             container = try await mgr.create(
                 spec.id,
                 image: image,
@@ -452,7 +496,14 @@ public actor Sandbox {
                     format: "ext4",
                     source: target.path(percentEncoded: false),
                     destination: "/",
-                    runtimeOptions: ["vzDiskImageSynchronizationMode=fsync"]
+                    // A sandbox rootfs is a throwaway clone of a cached image.
+                    // fsync durability costs seconds of boot time to protect
+                    // data that is discarded when the sandbox exits, and
+                    // "cached" lets the host page cache serve repeat starts.
+                    runtimeOptions: [
+                        "vzDiskImageSynchronizationMode=none",
+                        "vzDiskImageCachingMode=cached",
+                    ]
                 ),
                 networking: false,
                 configuration: configure
@@ -465,11 +516,14 @@ public actor Sandbox {
                 configuration: configure
             )
         }
+        trace("create", since: &mark)
         self.manager = mgr
         self.container = container
 
         try await container.create()
+        trace("container.create", since: &mark)
         try await container.start()
+        trace("container.start", since: &mark)
         logger?.info("sandbox started", metadata: ["id": .string(spec.id)])
     }
 
@@ -534,9 +588,17 @@ public actor Sandbox {
     /// Applied last so the CA install, MCP config, clone and dockerd bootstraps
     /// have all completed their root-only work first.
     static func dropPrivilegeBootstrap(
-        wrapping command: [String], user: String, workspace: String
+        wrapping command: [String], user: String, workspace: String, cloned: Bool
     ) -> [String] {
         guard !command.isEmpty else { return command }
+        // A cloned workspace is a real tree in the rootfs, created moments ago
+        // by the clone step running as root, so the agent cannot write it until
+        // it is chowned. A shared workspace is virtiofs, which presents host
+        // ownership whatever the guest asks for: recursing there changed
+        // nothing and still walked every file, which cost 20s of startup on a
+        // 45k-file repository.
+        let workspaceOwnership =
+            cloned ? "chown -R \"$TARGET_UID\" \"\(workspace)\" 2>/dev/null || true" : ":"
         let script = """
             RUN_AS=\(user)
             if ! id -u "$RUN_AS" >/dev/null 2>&1; then
@@ -568,7 +630,7 @@ public actor Sandbox {
               [ -e "/root/$item" ] && cp -a "/root/$item" "$HOME_DIR/" 2>/dev/null
             done
             chown -R "$TARGET_UID" "$HOME_DIR" 2>/dev/null || true
-            chown -R "$TARGET_UID" "\(workspace)" 2>/dev/null || true
+            \(workspaceOwnership)
             # Installing packages is a normal thing for an agent to do, and it
             # cannot as an unprivileged user. This is still a VM whose egress is
             # enforced outside it, so root here buys the agent nothing beyond
