@@ -224,8 +224,7 @@ sleep 4
 LOG=$("$B" policy log audit-box 2>&1)
 check "a DNS refusal is recorded with its name" "deny  dns www.iana.org" "$LOG"
 check "an allowed dial names the rule" "allow-rule 'example.com'" "$LOG"
-check "--denied filters to refusals" "^$" \
-  "$("$B" policy log audit-box --denied 2>&1 | grep -c 'allow ' | grep -v '^0$')"
+check_absent "--denied shows no allows" "allow " "$("$B" policy log audit-box --denied 2>&1)"
 "$B" rm audit-box --force >/dev/null 2>&1
 
 echo "== sandbox isolation =="
@@ -257,6 +256,9 @@ check "another sandbox cannot reach it at the same address" "unreachable" \
 echo "== cleanup =="
 
 count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
+# Other sandboxes may legitimately be running; compare against a baseline
+# rather than assuming this machine is otherwise idle.
+BASELINE_GATEWAYS=$(count_gateways)
 count_dirs() { ls -d /tmp/airlock-* 2>/dev/null | wc -l | tr -d " "; }
 
 # An ephemeral run must leave nothing behind. One stray directory per
@@ -275,10 +277,16 @@ while ! grep -q READY /tmp/airlock-sigint.log 2>/dev/null && [ "$SPENT" -lt 120 
   SPENT=$((SPENT + 2))
 done
 RUNNING=$(count_gateways)
-check "gateway runs while the sandbox does" "^[1-9]" "$RUNNING"
+if [ "$RUNNING" -gt "$BASELINE_GATEWAYS" ]; then
+  echo "  PASS  gateway runs while the sandbox does"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL  gateway runs while the sandbox does (baseline $BASELINE_GATEWAYS, now $RUNNING)"
+  FAIL=$((FAIL + 1))
+fi
 kill -INT "$SIG_PID" 2>/dev/null
 sleep 8
-check "SIGINT stops the gateway" "^0$" "$(count_gateways)"
+check "SIGINT stops the gateway" "^$BASELINE_GATEWAYS$" "$(count_gateways)"
 rm -f /tmp/airlock-sigint.log
 "$B" prune >/dev/null 2>&1
 
