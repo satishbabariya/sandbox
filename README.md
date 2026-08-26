@@ -385,8 +385,8 @@ file, templates and snapshots, Docker kit import, interactive terminals,
 interception), dynamic filesystem approval (`VZHotplugProvider`),
 kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
 divergence — see above), OAuth flows beyond a host sign-in already present
-(airlock reuses one but does not perform the sign-in itself), kit composition
-(`extends` / `mixins`), a TUI, x86 emulation.
+(airlock reuses one but does not perform the sign-in itself), kit `extends`
+chains, a TUI, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation

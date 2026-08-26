@@ -607,3 +607,127 @@ struct CredentialCoverageTests {
         #expect(stillMissing == ["github"])
     }
 }
+
+@Suite("Kit composition")
+struct KitCompositionTests {
+    private func spec(_ yaml: String) throws -> KitSpec {
+        let path = URL(filePath: NSTemporaryDirectory())
+            .appending(path: "kit-\(UInt32.random(in: 0..<0xFFFF_FFFF)).yaml")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try yaml.write(to: path, atomically: true, encoding: .utf8)
+        return try KitSpec.load(from: path)
+    }
+
+    private var base: KitSpec {
+        get throws {
+            try spec(
+                """
+                name: base
+                kind: sandbox
+                sandbox:
+                  image: alpine
+                  entrypoint: ["/bin/base"]
+                permissions:
+                  network:
+                    allow: ["a.example.com", "shared.example.com"]
+                environment:
+                  variables:
+                    SHARED: base
+                    ONLY_BASE: "1"
+                setup:
+                  install:
+                    - command: install-base
+                """)
+        }
+    }
+
+    private var mixin: KitSpec {
+        get throws {
+            try spec(
+                """
+                name: extra
+                kind: mixin
+                permissions:
+                  network:
+                    allow: ["b.example.com", "shared.example.com"]
+                environment:
+                  variables:
+                    SHARED: mixin
+                    ONLY_MIXIN: "1"
+                setup:
+                  install:
+                    - command: install-extra
+                """)
+        }
+    }
+
+    @Test("egress is unioned, not replaced")
+    func egressUnion() throws {
+        let result = try KitComposer.compose(base: try base, mixins: [try mixin])
+        // A mixin can only widen. Losing a base rule would silently narrow the
+        // sandbox below what the base kit declared.
+        #expect(result.profile.allow.contains("a.example.com"))
+        #expect(result.profile.allow.contains("b.example.com"))
+        // And a shared rule appears once.
+        #expect(result.profile.allow.filter { $0 == "shared.example.com" }.count == 1)
+    }
+
+    @Test("install runs base first, then the mixin")
+    func installOrder() throws {
+        // A mixin's installer expects the base toolchain to be present.
+        let result = try KitComposer.compose(base: try base, mixins: [try mixin])
+        #expect(result.profile.install == ["install-base", "install-extra"])
+    }
+
+    @Test("a mixin's environment wins on conflict")
+    func environmentLaterWins() throws {
+        let result = try KitComposer.compose(base: try base, mixins: [try mixin])
+        #expect(result.profile.environment["SHARED"] == "mixin")
+        #expect(result.profile.environment["ONLY_BASE"] == "1")
+        #expect(result.profile.environment["ONLY_MIXIN"] == "1")
+    }
+
+    @Test("the base image and command survive composition")
+    func baseIdentityKept() throws {
+        // A mixin has no image; composing must not blank the base's.
+        let result = try KitComposer.compose(base: try base, mixins: [try mixin])
+        #expect(result.profile.image == "alpine")
+        #expect(result.profile.command == ["/bin/base"])
+    }
+
+    @Test("layering a non-mixin is refused")
+    func nonMixinRefused() throws {
+        #expect(throws: KitError.self) {
+            try KitComposer.compose(base: try base, mixins: [try base])
+        }
+    }
+
+    @Test("a mixin bound to another agent is flagged")
+    func requiresMismatchFlagged() throws {
+        // Layering a mixin onto an agent it was not written for produces
+        // something its author never tested, so say so.
+        let bound = try spec(
+            """
+            name: claude-only
+            kind: mixin
+            requires:
+              agent: claude
+            """)
+        let result = try KitComposer.compose(base: try base, mixins: [bound])
+        #expect(result.notes.contains { $0.contains("requires.agent") })
+    }
+
+    @Test("mixin warnings name which mixin they came from")
+    func warningsAreAttributed() throws {
+        let noisy = try spec(
+            """
+            name: noisy
+            kind: mixin
+            setup:
+              startup:
+                - command: ["something"]
+            """)
+        let result = try KitComposer.compose(base: try base, mixins: [noisy])
+        #expect(result.unsupported.contains { $0.hasPrefix("[noisy]") })
+    }
+}

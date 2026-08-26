@@ -25,6 +25,19 @@ public struct KitSpec: Decodable, Sendable {
     public var security: Security?
     public var mixins: [String]?
     public var `extends`: String?
+    /// A mixin may declare which agent it belongs to.
+    public var requires: Requires?
+    /// Guidance a kit wants delivered to the agent.
+    public var agentInstructions: AgentInstructions?
+
+    public struct Requires: Decodable, Sendable {
+        public var agent: String?
+    }
+
+    public struct AgentInstructions: Decodable, Sendable {
+        public var filename: String?
+        public var content: String?
+    }
 
     public struct Sandbox: Decodable, Sendable {
         public var image: String?

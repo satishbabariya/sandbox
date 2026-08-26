@@ -24,8 +24,11 @@ struct KitInspect: AsyncParsableCommand {
     @Argument(help: "Directory containing spec.yaml, or the file itself.")
     var path: String
 
+    @Option(name: .long, help: "Layer a mixin kit on top; repeatable.")
+    var with: [String] = []
+
     func run() async throws {
-        let translation = try KitInspect.translate(path)
+        let translation = try KitInspect.translate(path, mixins: with)
         let profile = translation.profile
 
         print("name:        \(profile.name)")
@@ -52,7 +55,15 @@ struct KitInspect: AsyncParsableCommand {
         KitInspect.report(translation)
     }
 
-    static func translate(_ path: String) throws -> KitTranslation {
+    static func translate(_ path: String, mixins: [String] = []) throws -> KitTranslation {
+        let base = try loadSpec(path)
+        guard !mixins.isEmpty else {
+            return try KitTranslator.translate(base)
+        }
+        return try KitComposer.compose(base: base, mixins: try mixins.map(loadSpec))
+    }
+
+    static func loadSpec(_ path: String) throws -> KitSpec {
         var url = URL(filePath: path).standardizedFileURL
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
@@ -63,7 +74,7 @@ struct KitInspect: AsyncParsableCommand {
         guard FileManager.default.isReadableFile(atPath: url.path) else {
             throw KitError.notFound(url)
         }
-        return try KitTranslator.translate(try KitSpec.load(from: url))
+        return try KitSpec.load(from: url)
     }
 
     /// Print the gaps loudly. A kit that quietly lost a rule would produce a
@@ -92,11 +103,14 @@ struct KitImport: AsyncParsableCommand {
     @Option(name: .long, help: "Name for the imported agent. Defaults to the kit's name.")
     var name: String?
 
+    @Option(name: .long, help: "Layer a mixin kit on top; repeatable.")
+    var with: [String] = []
+
     @Flag(name: .shortAndLong, help: "Overwrite an existing profile of that name.")
     var force: Bool = false
 
     func run() async throws {
-        var translation = try KitInspect.translate(path)
+        var translation = try KitInspect.translate(path, mixins: with)
         if let name {
             try SandboxStore.validate(name: name)
             translation.profile.name = name

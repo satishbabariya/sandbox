@@ -128,6 +128,7 @@ public enum KitError: Error, CustomStringConvertible {
     case missingImage(String)
     case mixinNotSupported(String)
     case notFound(URL)
+    case notAMixin(String)
 
     public var description: String {
         switch self {
@@ -143,6 +144,8 @@ public enum KitError: Error, CustomStringConvertible {
                 """
         case .notFound(let url):
             return "no spec.yaml at \(url.path)"
+        case .notAMixin(let name):
+            return "'\(name)' is not a mixin; only mixins can be layered with --with"
         }
     }
 }
