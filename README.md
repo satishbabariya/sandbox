@@ -70,10 +70,14 @@ same IP.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 65 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 67 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
-it was testing never ran:
+it was testing never ran.
+
+Four more run under `AIRLOCK_AGENT_E2E=1`: they drive Claude Code through a
+real task and cost API tokens, so they are opt-in rather than skipped by
+default for being awkward.
 
 | Scenario | Result |
 |---|---|

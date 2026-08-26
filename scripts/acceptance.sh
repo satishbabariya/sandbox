@@ -15,6 +15,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 B="${AIRLOCK_BIN:-.build/debug/airlock}"
+# Absolute, because a case that runs airlock from a workspace it just created
+# has to cd there first, and a relative path stops resolving the moment it does.
+case "$B" in /*) ;; *) B="$PWD/$B" ;; esac
 IMAGE="${AIRLOCK_TEST_IMAGE:-docker.io/library/alpine:3.20}"
 CLONE_IMAGE="${AIRLOCK_CLONE_IMAGE:-shell}"
 PASS=0
@@ -467,6 +470,56 @@ check_absent "the config is not left unwritten" "could not write" "$out"
 # refused rather than ignored after booting a VM.
 out=$($B run "$IMAGE" --no-tty --mcp filesystem -- /bin/true 2>&1)
 check "--mcp without an agent is refused, not ignored" "needs an agent" "$out"
+
+echo "== console output is captured =="
+
+$B rm logcase --force >/dev/null 2>&1
+$B run "$IMAGE" --name logcase --detach --no-tty -- \
+  /bin/sh -c 'echo ON_STDOUT; echo ON_STDERR >&2; sleep 60' >/dev/null 2>&1
+for _ in 1 2 3 4 5 6; do
+  $B logs logcase 2>&1 | grep -q ON_STDOUT && break
+  sleep 1
+done
+out=$($B logs logcase 2>&1)
+check "a detached sandbox's stdout is kept" "ON_STDOUT" "$out"
+# Both streams, or a crash message would be the thing you could not read.
+check "and its stderr with it" "ON_STDERR" "$out"
+$B rm logcase --force >/dev/null 2>&1
+
+echo "== a real agent, end to end =="
+
+# Opt-in: this one spends API tokens and needs a Claude Code sign-in already on
+# the host. It is the claim the whole project rests on -- an agent doing real
+# work without ever holding the credential -- so it is here rather than only in
+# somebody's memory of having tried it once.
+if [ "${AIRLOCK_AGENT_E2E:-0}" != "1" ]; then
+  echo "  skipped (set AIRLOCK_AGENT_E2E=1 to run; needs a host sign-in)"
+else
+  E2E_DIR=$(mktemp -d)
+  cat >"$E2E_DIR/calc.py" <<'PYFILE'
+def add(a, b):
+    return a - b
+
+
+def test_add():
+    assert add(2, 3) == 5
+PYFILE
+
+  out=$(cd "$E2E_DIR" && $B run claude --no-tty --secret claude -- \
+    claude --dangerously-skip-permissions -p \
+    'Run: python3 -m pytest calc.py -q. It fails. Fix the bug in calc.py, rerun, and reply with the final pytest summary line.' 2>&1)
+
+  check "the agent gets the tests passing" "1 passed" "$out"
+  check "and its fix is on the host afterwards" "a \+ b" "$(cat "$E2E_DIR/calc.py" 2>&1)"
+
+  # The point of the exercise: it reached the real API while never holding the
+  # token that let it.
+  leak=$($B run claude --no-tty --secret claude -- /bin/sh -c \
+    'echo "KEY=$ANTHROPIC_API_KEY"; echo "LEAKS=$(env | grep -c sk-ant)"' 2>&1)
+  check "the guest saw only the sentinel" "KEY=airlock-managed" "$leak"
+  check "the real token never entered the guest" "LEAKS=0" "$leak"
+  rm -rf "$E2E_DIR"
+fi
 
 echo
 echo "passed: $PASS   failed: $FAIL"
