@@ -83,7 +83,10 @@ public enum KitTranslator {
                     service: credential.service,
                     domain: rule.domain,
                     header: header,
-                    format: Self.format(for: rule))
+                    format: Self.format(for: rule),
+                    // The kit names the variable its tool reads; without it the
+                    // credential is brokered but the tool never sends anything.
+                    environmentVariable: credential.apiKey?.name)
             }
             guard !declared.isEmpty else {
                 notes.append(

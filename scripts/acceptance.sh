@@ -52,6 +52,17 @@ if [ ! -x "$B" ]; then
   exit 1
 fi
 
+# A bare `swift build` -- or a `swift test`, which rebuilds the executable --
+# replaces the signed binary with an unsigned one. Every case then fails with
+# "the process doesn't have the com.apple.security.virtualization entitlement",
+# which looks like sixty broken features rather than one missing signature.
+if ! codesign -d --entitlements - "$B" 2>&1 | grep -q virtualization; then
+  echo "$B is not signed with com.apple.security.virtualization, so no sandbox"
+  echo "can start. A plain 'swift build' or 'swift test' strips it."
+  echo "run: make build"
+  exit 1
+fi
+
 echo "== egress boundary =="
 
 out=$($B run "$IMAGE" -- /bin/sh -c \
@@ -529,6 +540,33 @@ check "your own files are untouched" "original" "$(cat "$INSTR_DIR/kept.txt" 2>&
 
 rm -rf "$INSTR_DIR"
 rm -f "$AGENTS_DIR/acceptinstr.json"
+
+echo "== a kit is imported and run =="
+
+# Translating a kit and running one are different things: three bugs that made
+# every real kit fail to install got through a suite that only ever inspected
+# them. This kit is self-contained -- it installs from a printf, not from a
+# GitHub release -- so the case tests airlock rather than the network.
+$B kit import testdata/kits/selftest --name acceptkit --force >/dev/null 2>&1
+check "control: the kit imports" "acceptkit" "$($B agents ls 2>&1)"
+
+printf '%s' "sk-selftest-not-a-real-key" | $B secret set selftest --stdin >/dev/null 2>&1
+out=$($B run acceptkit --no-tty --secret selftest 2>&1)
+
+# The install step is a multi-line bash program with a case block and a command
+# substitution, which is what the old assembly could not survive.
+check "a multi-line install step runs" "INSTALLED_BY_KIT" "$out"
+check "a declared file is written" "DECLARED_FILE_WRITTEN" "$out"
+check "a startup command runs" "STARTUP_RAN" "$out"
+# The kit names a service airlock ships no preset for; the binding and the
+# variable both have to come from the kit, or the tool is never told there is
+# a key at all.
+check "a kit-declared credential reaches the tool" "KEY=airlock-managed" "$out"
+check_absent "and the real value does not" "sk-selftest-not-a-real-key" "$out"
+
+$B secret rm selftest >/dev/null 2>&1
+$B agents rm acceptkit >/dev/null 2>&1
+check_absent "an imported kit can be removed again" "acceptkit" "$($B agents ls 2>&1)"
 
 echo "== a real agent, end to end =="
 

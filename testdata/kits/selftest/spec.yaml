@@ -1,0 +1,74 @@
+# A kit that exercises the whole import-and-run path without leaving the
+# machine. The real kits in docker/sbx-kits-contrib install from GitHub
+# releases, so a suite built on those would be testing the network as much as
+# airlock -- and three bugs reached a release because nothing ran a kit at all.
+schemaVersion: "2"
+kind: sandbox
+name: selftest
+displayName: Kit self test
+description: Exercises install, files, startup and credentials with no network.
+
+sandbox:
+  image: alpine:3.20
+  command:
+    default:
+      - /bin/sh
+      - -c
+      - |
+        installed-by-kit
+        cat /etc/selftest/declared.txt
+        cat /tmp/startup-ran.txt
+        echo "KEY=$SELFTEST_TOKEN"
+
+permissions:
+  network:
+    allow:
+      - example.com
+
+environment:
+  variables:
+    SELFTEST_MARKER: from-kit-environment
+
+credentials:
+  # A service airlock ships no preset for: the binding has to come from here.
+  - service: selftest
+    apiKey:
+      name: SELFTEST_TOKEN
+      proxyManaged: true
+      inject:
+        - domain: example.com
+          header: x-selftest-key
+          format: '%s'
+
+setup:
+  install:
+    # Deliberately a multi-line bash program with a case block and a command
+    # substitution: splicing this into a progress echo is what broke.
+    - command: |
+        set -euo pipefail
+        ARCH=$(uname -m)
+        case "$ARCH" in
+          aarch64|arm64|x86_64) ;;
+          *) echo "unexpected arch: $ARCH" >&2; exit 1 ;;
+        esac
+        printf '#!/bin/sh\necho INSTALLED_BY_KIT\n' >/usr/local/bin/installed-by-kit
+        chmod 0755 /usr/local/bin/installed-by-kit
+      user: "0"
+      description: Install a marker command
+
+  files:
+    - path: /etc/selftest/declared.txt
+      mode: "0644"
+      content: |
+        DECLARED_FILE_WRITTEN
+
+  startup:
+    - command:
+        - /bin/sh
+        - -c
+        - echo STARTUP_RAN > /tmp/startup-ran.txt
+
+agentInstructions:
+  filename: AGENTS.md
+  content: |
+    KIT_INSTRUCTIONS_PRESENT

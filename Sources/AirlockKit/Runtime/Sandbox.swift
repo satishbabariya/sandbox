@@ -465,8 +465,7 @@ public actor Sandbox {
                     config.process.environmentVariables.append("\(key)=\(value)")
                 }
                 for binding in spec.credentials {
-                    guard let name = CredentialBinding.sentinelEnvironment[binding.service]
-                    else { continue }
+                    guard let name = binding.environmentVariable else { continue }
                     config.process.environmentVariables.append(
                         "\(name)=\(CredentialBinding.sentinel)")
                 }

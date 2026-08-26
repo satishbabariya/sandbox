@@ -12,7 +12,10 @@ struct AgentsCommand: AsyncParsableCommand {
             any of them. Drop JSON in ~/.airlock/agents to add your own or \
             override a built-in of the same name.
             """,
-        subcommands: [AgentsList.self, AgentsShow.self, AgentsEdit.self, AgentsCache.self],
+        subcommands: [
+            AgentsList.self, AgentsShow.self, AgentsEdit.self, AgentsRemove.self,
+            AgentsCache.self,
+        ],
         defaultSubcommand: AgentsList.self
     )
 }
@@ -141,5 +144,32 @@ struct AgentsCache: AsyncParsableCommand {
             unit += 1
         }
         return String(format: "%.1f %@", value, units[unit])
+    }
+}
+
+/// Removes a custom agent.
+///
+/// `kit import` creates these, so there has to be a way to get rid of one --
+/// otherwise trying a kit means editing ~/.airlock/agents by hand afterwards.
+struct AgentsRemove: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "rm",
+        abstract: "Remove a custom agent.",
+        aliases: ["remove"]
+    )
+
+    @Argument(help: "Agent name.")
+    var name: String
+
+    func run() async throws {
+        let registry = AgentRegistry()
+        try registry.remove(name)
+        // A custom profile can shadow a built-in, in which case removing it
+        // brings the built-in back rather than leaving nothing.
+        if AgentProfile.builtIns.contains(where: { $0.name == name }) {
+            print("removed custom '\(name)'; the built-in is in use again")
+        } else {
+            print("removed '\(name)'")
+        }
     }
 }

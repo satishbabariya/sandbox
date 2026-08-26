@@ -14,6 +14,16 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
     public var header: String
     /// How to render the value. `{}` is replaced with the secret.
     public var format: String
+    /// The environment variable the tool reads this credential from, set in
+    /// the guest to the sentinel.
+    ///
+    /// Carried on the binding rather than looked up in a table, because a kit
+    /// names it: a credential airlock ships no preset for still has to reach
+    /// the tool that wants it. Without this, such a credential got a binding
+    /// and an allowed domain and then never fired, because nothing told the
+    /// tool there was a key at all.
+    public var environmentVariable: String?
+
     /// Headers to strip before injecting.
     ///
     /// An agent may authenticate differently from the credential backing it:
@@ -24,13 +34,32 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
 
     public init(
         service: String, domain: String, header: String, format: String = "{}",
-        replaceHeaders: [String] = []
+        replaceHeaders: [String] = [], environmentVariable: String? = nil
     ) {
         self.service = service
         self.domain = domain
         self.header = header
         self.format = format
         self.replaceHeaders = replaceHeaders
+        self.environmentVariable = environmentVariable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case service, domain, header, format, replaceHeaders, environmentVariable
+    }
+
+    /// Only the service, domain and header are required, so a binding written
+    /// by hand stays terse and one written by an older airlock keeps decoding.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            service: try c.decode(String.self, forKey: .service),
+            domain: try c.decode(String.self, forKey: .domain),
+            header: try c.decode(String.self, forKey: .header),
+            format: try c.decodeIfPresent(String.self, forKey: .format) ?? "{}",
+            replaceHeaders: try c.decodeIfPresent([String].self, forKey: .replaceHeaders) ?? [],
+            environmentVariable: try c.decodeIfPresent(
+                String.self, forKey: .environmentVariable))
     }
 
     /// What the guest is given in place of the real value.
@@ -41,16 +70,20 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
     public static let presets: [String: CredentialBinding] = [
         "anthropic": CredentialBinding(
             service: "anthropic", domain: "api.anthropic.com",
-            header: "x-api-key", format: "{}"),
+            header: "x-api-key", format: "{}",
+            environmentVariable: "ANTHROPIC_API_KEY"),
         "openai": CredentialBinding(
             service: "openai", domain: "api.openai.com",
-            header: "authorization", format: "Bearer {}"),
+            header: "authorization", format: "Bearer {}",
+            environmentVariable: "OPENAI_API_KEY"),
         "github": CredentialBinding(
             service: "github", domain: "api.github.com",
-            header: "authorization", format: "Bearer {}"),
+            header: "authorization", format: "Bearer {}",
+            environmentVariable: "GITHUB_TOKEN"),
         "gemini": CredentialBinding(
             service: "gemini", domain: "generativelanguage.googleapis.com",
-            header: "x-goog-api-key", format: "{}"),
+            header: "x-goog-api-key", format: "{}",
+            environmentVariable: "GEMINI_API_KEY"),
         // Reuses an OAuth sign-in already on the host rather than a stored key.
         "claude": CredentialBinding(
             service: "claude", domain: "api.anthropic.com",
@@ -59,15 +92,6 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
             // it is, to the sentinel. Both headers reaching the server means
             // the sentinel is judged alongside the real token.
             replaceHeaders: ["x-api-key"]),
-    ]
-
-    /// The environment variable an agent expects, set to the sentinel so tools
-    /// that require *something* present still run.
-    public static let sentinelEnvironment: [String: String] = [
-        "anthropic": "ANTHROPIC_API_KEY",
-        "openai": "OPENAI_API_KEY",
-        "github": "GITHUB_TOKEN",
-        "gemini": "GEMINI_API_KEY",
     ]
 
     public static func preset(for service: String) -> CredentialBinding? {

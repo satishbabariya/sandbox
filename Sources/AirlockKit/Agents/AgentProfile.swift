@@ -336,6 +336,7 @@ extension AgentProfile {
 public enum AgentError: Error, CustomStringConvertible {
     case unknown(String, available: [String])
     case malformed(String, underlying: String)
+    case notCustom(String)
 
     public var description: String {
         switch self {
@@ -344,6 +345,11 @@ public enum AgentError: Error, CustomStringConvertible {
                 no agent named '\(name)'
                 available: \(available.joined(separator: ", "))
                 or pass an image reference instead, e.g. alpine:3.20
+                """
+        case .notCustom(let name):
+            return """
+                '\(name)' is not a custom agent, so there is nothing to remove
+                built-ins are part of airlock; customise one with: airlock agents edit \(name)
                 """
         case .malformed(let path, let underlying):
             return "could not read agent profile at \(path): \(underlying)"
@@ -430,6 +436,18 @@ public struct AgentRegistry: Sendable {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(profile).write(
             to: directory.appending(path: "\(profile.name).json"), options: .atomic)
+    }
+
+    /// Remove a user-defined profile.
+    ///
+    /// A built-in cannot be removed; a user profile shadowing one is removed,
+    /// which restores the built-in rather than leaving a hole.
+    public func remove(_ name: String) throws {
+        let file = directory.appending(path: "\(name).json")
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            throw AgentError.notCustom(name)
+        }
+        try FileManager.default.removeItem(at: file)
     }
 }
 
