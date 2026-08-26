@@ -24,7 +24,7 @@ struct PolicyCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "policy",
         abstract: "Inspect and test network policy.",
-        subcommands: [PolicyCheck.self]
+        subcommands: [PolicyCheck.self, PolicyLogCommand.self]
     )
 }
 
