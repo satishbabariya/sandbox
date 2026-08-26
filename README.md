@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 122 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 126 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -515,6 +515,7 @@ brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
 file, templates and snapshots, Docker kit import and mixin composition,
 interactive terminals, `policy log`, `top`, `doctor`, `kernel install`,
+`secret check`,
 provisioned files and startup commands (including background daemons).
 
 **Not yet:** dynamic filesystem approval (`VZHotplugProvider`),

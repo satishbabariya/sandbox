@@ -45,16 +45,24 @@ public struct HostKeychainSource: Codable, Sendable, Equatable {
         return (token, expiry)
     }
 
-    static func rawItem(service: String) throws -> Data? {
-        let query: [String: Any] = [
+    static func rawItem(
+        service: String, interaction: KeychainInteraction = .automatic
+    ) throws -> Data? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if interaction == .refused {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         if status == errSecItemNotFound { return nil }
+        guard status != errSecInteractionNotAllowed else {
+            throw SecretError.needsAuthorisation(service)
+        }
         guard status == errSecSuccess, let data = item as? Data else {
             throw SecretError.keychain(status, operation: "read '\(service)'")
         }

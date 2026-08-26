@@ -12,7 +12,9 @@ struct SecretCommand: AsyncParsableCommand {
             the real value is substituted on the host, per request, only for the \
             domain the credential is bound to.
             """,
-        subcommands: [SecretSet.self, SecretList.self, SecretRemove.self],
+        subcommands: [
+            SecretSet.self, SecretList.self, SecretCheck.self, SecretRemove.self,
+        ],
         defaultSubcommand: SecretList.self
     )
 }
@@ -114,4 +116,52 @@ struct SecretRemove: AsyncParsableCommand {
 
 extension Int32 {
     var boolValue: Bool { self != 0 }
+}
+
+/// Reads a secret so the keychain asks once, and reports whether it can be
+/// read at all.
+///
+/// macOS ties a keychain item's authorisation to the binary that stored it, so
+/// a rebuilt or upgraded airlock has to be approved again. Under automation
+/// that approval is never given: the dialog appears where nobody sees it and
+/// the read waits for it indefinitely. This is the deliberate place to answer
+/// it -- and, when something is already wrong, to find out which secret is the
+/// problem without starting a VM to discover it.
+struct SecretCheck: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "check",
+        abstract: "Verify a secret can be read, approving it if the keychain asks.",
+        discussion: """
+            Run this in a terminal and choose Always Allow when macOS asks. The \
+            value is never printed -- only whether it could be read.
+            """
+    )
+
+    @Argument(help: "Secret name, or every stored secret if omitted.")
+    var name: String?
+
+    func run() async throws {
+        let store = SecretStore()
+        let services = try name.map { [$0] } ?? store.list()
+        guard !services.isEmpty else {
+            print("no secrets stored")
+            return
+        }
+
+        var unreadable = 0
+        for service in services {
+            do {
+                // Interaction is allowed deliberately: being asked is the point
+                // of running this, and there is someone here to answer.
+                let value = try store.get(service, interaction: .allowed)
+                print("  ok    \(service)  readable (\(value.count) characters)")
+            } catch {
+                print("  fail  \(service)  \(error)")
+                unreadable += 1
+            }
+        }
+        if unreadable > 0 {
+            throw ExitCode(1)
+        }
+    }
 }

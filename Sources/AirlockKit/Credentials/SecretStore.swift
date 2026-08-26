@@ -1,10 +1,31 @@
 import Foundation
 import Security
 
+/// How a keychain read should behave when macOS wants the user to authorise it.
+///
+/// Reading an item can raise a system dialog. With a person at the terminal
+/// that is the normal way to grant access once. With nobody there -- a script,
+/// a CI step, an agent running unattended -- the dialog is never answered and
+/// the read blocks forever: `airlock run claude` sat for nineteen minutes with
+/// an empty runtime directory and no output, because a prompt nobody could see
+/// was waiting behind it.
+public enum KeychainInteraction: Sendable {
+    case allowed
+    case refused
+
+    /// Prompt only when someone is there to answer.
+    public static var automatic: KeychainInteraction {
+        isatty(STDIN_FILENO) == 1 ? .allowed : .refused
+    }
+}
+
 public enum SecretError: Error, CustomStringConvertible {
     case keychain(OSStatus, operation: String)
     case notFound(String)
     case invalidValue
+    /// The item exists but macOS wanted the user to authorise reading it, and
+    /// there was nobody to ask.
+    case needsAuthorisation(String)
 
     public var description: String {
         switch self {
@@ -15,6 +36,13 @@ public enum SecretError: Error, CustomStringConvertible {
             return "keychain \(operation) failed: \(message)"
         case .notFound(let service):
             return "no secret stored for '\(service)'"
+        case .needsAuthorisation(let service):
+            return """
+                the keychain will not release '\(service)' without you approving it, \
+                and nothing here can ask
+                run `airlock secret check \(service)` once in a terminal and choose \
+                Always Allow
+                """
         case .invalidValue:
             return "secret value must be valid UTF-8"
         }
@@ -66,16 +94,24 @@ public struct SecretStore: Sendable {
         }
     }
 
-    public func get(_ service: String) throws -> String {
-        let query: [String: Any] = [
+    public func get(
+        _ service: String, interaction: KeychainInteraction = .automatic
+    ) throws -> String {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: account(service),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+        if interaction == .refused {
+            query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        }
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status != errSecItemNotFound else { throw SecretError.notFound(service) }
+        guard status != errSecInteractionNotAllowed else {
+            throw SecretError.needsAuthorisation(service)
+        }
         guard status == errSecSuccess, let data = item as? Data else {
             throw SecretError.keychain(status, operation: "read")
         }

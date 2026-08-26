@@ -149,6 +149,25 @@ check "the symlink is a plain write into the workspace" "outside.txt" \
   "$(readlink "$FSW/inside/escape" 2>&1)"
 rm -rf "$FSW"
 
+echo "== a secret that cannot be read says so instead of waiting =="
+
+# macOS ties a keychain item's authorisation to the binary that stored it, so a
+# rebuilt or upgraded airlock must be approved again. Under automation nobody
+# answers that dialog: `airlock run claude` sat for nineteen minutes with an
+# empty runtime directory and no output, because a prompt was waiting where
+# nobody could see it.
+printf '%s' "sk-check-probe" | $B secret set anthropic --stdin >/dev/null 2>&1
+check "a readable secret is reported as readable" "ok    anthropic" \
+  "$($B secret check anthropic 2>&1)"
+check_absent "and its value is never printed" "sk-check-probe" \
+  "$($B secret check anthropic 2>&1)"
+$B secret rm anthropic >/dev/null 2>&1
+
+out=$($B secret check nosuchsecret 2>&1)
+status=$?
+check "an unreadable secret is named" "nosuchsecret" "$out"
+check "and reported by exit status" "1" "$status"
+
 echo "== interception is scoped to the domains a credential is bound to =="
 
 # Substituting a credential means terminating TLS, so the guest is given a CA
@@ -818,6 +837,27 @@ check_absent "and the real value does not" "sk-selftest-not-a-real-key" "$out"
 $B secret rm selftest >/dev/null 2>&1
 $B agents rm acceptkit >/dev/null 2>&1
 check_absent "an imported kit can be removed again" "acceptkit" "$($B agents ls 2>&1)"
+
+echo "== every built-in agent starts =="
+
+# Three of the five shipped agents had never been run, so nothing said whether
+# their install steps still worked against the registries they pull from.
+# Opt-in: building each environment from scratch pulls an image and installs a
+# toolchain, which is minutes per agent on a cold cache.
+if [ "${AIRLOCK_ALL_AGENTS:-0}" != "1" ]; then
+  echo "  skipped (set AIRLOCK_ALL_AGENTS=1 to build and run every agent)"
+else
+  for agent in claude codex gemini opencode shell; do
+    out=$($B run "$agent" --no-tty -- /bin/sh -c 'echo "STARTED uid=$(id -u)"' 2>&1)
+    check "$agent starts" "STARTED" "$out"
+    # An agent that came up as root could not run the tools it ships: Claude
+    # Code refuses --dangerously-skip-permissions as root outright.
+    case "$agent" in
+      shell|claude|codex|gemini|opencode)
+        check "$agent runs unprivileged" "uid=1000" "$out" ;;
+    esac
+  done
+fi
 
 echo "== a real agent, end to end =="
 
