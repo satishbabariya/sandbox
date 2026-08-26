@@ -165,6 +165,16 @@ check "config deny cannot be flagged away" "BLOCKED" "$out"
 "$B" config unset deny >/dev/null 2>&1
 if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 
+echo "== agents run unprivileged =="
+
+# Claude Code refuses --dangerously-skip-permissions as root, so an agent
+# profile that ran as root could not work at all. Running unprivileged is also
+# the right posture: an agent has no business being root inside its own VM.
+out=$($B run claude --no-tty -- /bin/sh -c 'echo "uid=$(id -u)"; sudo -n true 2>/dev/null && echo sudo-ok' 2>&1)
+check "agent is not root" "uid=1000" "$out"
+# But it must still be able to install things, which is a normal agent action.
+check "agent can still escalate inside its own VM" "sudo-ok" "$out"
+
 echo "== host files are not writable through a copy mount =="
 
 # An agent rewrites its own config. Binding the host's real one read-write let

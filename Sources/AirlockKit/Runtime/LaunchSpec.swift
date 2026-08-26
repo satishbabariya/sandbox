@@ -35,6 +35,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
     /// MCP servers to run inside the sandbox.
     public var mcp: [MCPServer]
     public var mcpConfigPath: String?
+    /// Drop to this unprivileged user before running the command.
+    public var runAsUser: String?
 
     public init(
         name: String,
@@ -56,7 +58,8 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         ports: [String] = [],
         clone: Bool = false,
         mcp: [MCPServer] = [],
-        mcpConfigPath: String? = nil
+        mcpConfigPath: String? = nil,
+        runAsUser: String? = nil
     ) {
         self.name = name
         self.image = image
@@ -78,6 +81,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         self.clone = clone
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
+        self.runAsUser = runAsUser
     }
 
     /// Build a runnable spec. Writers are supplied by the caller because they
@@ -100,6 +104,7 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
             cloneWorkspace: clone,
             mcp: mcp,
             mcpConfigPath: mcpConfigPath,
+            runAsUser: runAsUser,
             preparedRootfs: preparedRootfs.map { URL(filePath: $0) },
             terminal: terminal,
             privileged: privileged,

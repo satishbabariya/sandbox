@@ -231,7 +231,8 @@ struct RunCommand: AsyncParsableCommand {
             ports: publish,
             clone: effectiveClone,
             mcp: servers,
-            mcpConfigPath: profile?.mcpConfigPath
+            mcpConfigPath: profile?.mcpConfigPath,
+            runAsUser: profile?.runAsUser
         )
         launch.environment = profile?.environment ?? [:]
         // An agent with no explicit workspace should see the directory the

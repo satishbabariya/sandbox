@@ -43,6 +43,8 @@ public struct SandboxSpec: Sendable {
     /// MCP servers to declare to the agent, and where to write the file.
     public var mcp: [MCPServer]
     public var mcpConfigPath: String?
+    /// Drop to this unprivileged user before running the command.
+    public var runAsUser: String?
     /// Use this prepared ext4 image as the rootfs instead of unpacking the
     /// image fresh. Set by the agent cache.
     public var preparedRootfs: URL?
@@ -86,6 +88,7 @@ public struct SandboxSpec: Sendable {
         cloneWorkspace: Bool = false,
         mcp: [MCPServer] = [],
         mcpConfigPath: String? = nil,
+        runAsUser: String? = nil,
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
         hostTerminal: Terminal? = nil,
@@ -110,6 +113,7 @@ public struct SandboxSpec: Sendable {
         self.cloneWorkspace = cloneWorkspace
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
+        self.runAsUser = runAsUser
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.hostTerminal = hostTerminal
@@ -328,6 +332,13 @@ public actor Sandbox {
                     contents: rendered)
             }
 
+            if let user = spec.runAsUser {
+                config.process.arguments = Self.dropPrivilegeBootstrap(
+                    wrapping: config.process.arguments,
+                    user: user,
+                    workspace: spec.workspaceDestination)
+            }
+
             if let dockerDisk {
                 config.mounts.append(
                     .block(
@@ -504,6 +515,79 @@ public actor Sandbox {
             printf %s '\(encoded)' | base64 -d > "\(path)" 2>/dev/null \
               || echo "airlock: could not write \(path)" >&2
             exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "airlock"] + command
+    }
+
+    /// Create an unprivileged user if the image lacks one, hand it the
+    /// workspace and a home, and exec the command as that user.
+    ///
+    /// Applied last so the CA install, MCP config, clone and dockerd bootstraps
+    /// have all completed their root-only work first.
+    static func dropPrivilegeBootstrap(
+        wrapping command: [String], user: String, workspace: String
+    ) -> [String] {
+        guard !command.isEmpty else { return command }
+        let script = """
+            RUN_AS=\(user)
+            if ! id -u "$RUN_AS" >/dev/null 2>&1; then
+              # Many agent images already ship an unprivileged user at 1000 —
+              # node:22 has "node" — and creating another there fails as
+              # non-unique. Reuse whoever is already there.
+              EXISTING=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
+              if [ -n "$EXISTING" ]; then
+                RUN_AS="$EXISTING"
+              else
+                # busybox/alpine and shadow/debian disagree on flags, so try
+                # both and keep their usage output off the agent's stdout.
+                adduser -D -u 1000 "$RUN_AS" >/dev/null 2>&1 \
+                  || useradd -m -u 1000 -s /bin/sh "$RUN_AS" >/dev/null 2>&1 \
+                  || true
+              fi
+            fi
+            TARGET_UID=$(id -u "$RUN_AS" 2>/dev/null)
+            if [ -z "$TARGET_UID" ]; then
+              echo "airlock: no unprivileged user available; running as root" >&2
+              exec "$@"
+            fi
+            TARGET_GID=$(id -g "$RUN_AS" 2>/dev/null || echo "$TARGET_UID")
+            HOME_DIR=$(getent passwd "$RUN_AS" 2>/dev/null | cut -d: -f6)
+            [ -n "$HOME_DIR" ] || HOME_DIR=/home/"$RUN_AS"
+            mkdir -p "$HOME_DIR"
+            # Earlier bootstraps staged the agent's config into root's home.
+            for item in .claude .claude.json .codex .gemini .config .mcp.json; do
+              [ -e "/root/$item" ] && cp -a "/root/$item" "$HOME_DIR/" 2>/dev/null
+            done
+            chown -R "$TARGET_UID" "$HOME_DIR" 2>/dev/null || true
+            chown -R "$TARGET_UID" "\(workspace)" 2>/dev/null || true
+            # Installing packages is a normal thing for an agent to do, and it
+            # cannot as an unprivileged user. This is still a VM whose egress is
+            # enforced outside it, so root here buys the agent nothing beyond
+            # its own sandbox.
+            if command -v sudo >/dev/null 2>&1; then
+              # sudo resolves its own hostname and warns loudly when it cannot,
+              # which looks like a failure on every single invocation.
+              HOSTNAME_NOW=$(hostname 2>/dev/null)
+              if [ -n "$HOSTNAME_NOW" ] && ! grep -qw "$HOSTNAME_NOW" /etc/hosts 2>/dev/null; then
+                echo "127.0.0.1 $HOSTNAME_NOW" >>/etc/hosts 2>/dev/null || true
+              fi
+              mkdir -p /etc/sudoers.d
+              echo "$RUN_AS ALL=(ALL) NOPASSWD: ALL" >/etc/sudoers.d/airlock 2>/dev/null || true
+              chmod 0440 /etc/sudoers.d/airlock 2>/dev/null || true
+            fi
+            export HOME="$HOME_DIR"
+            export USER="$RUN_AS"
+            # setpriv wants numeric ids, not names.
+            if command -v setpriv >/dev/null 2>&1; then
+              exec setpriv --reuid="$TARGET_UID" --regid="$TARGET_GID" \
+                --init-groups --inh-caps=-all "$@"
+            elif command -v su-exec >/dev/null 2>&1; then
+              exec su-exec "$TARGET_UID" "$@"
+            elif command -v runuser >/dev/null 2>&1; then
+              exec runuser -u "$RUN_AS" -- "$@"
+            else
+              exec su -s /bin/sh -c 'exec "$0" "$@"' "$RUN_AS" -- "$@"
+            fi
             """
         return ["/bin/sh", "-c", script, "airlock"] + command
     }

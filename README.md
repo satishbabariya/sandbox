@@ -89,6 +89,8 @@ Against live VMs on `alpine:3.20`:
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
+| **Agent fixes a bug and proves it** | edits code, installs pytest itself, `1 passed`, host tree untouched |
+| Agent process identity | `uid=1000`, with sudo available inside its own VM |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -348,6 +350,17 @@ cannot be weakened by a flag.** An operator can pin a block for every sandbox
 on the machine and rely on it. A config file that will not parse is an error,
 never a silent fallback — quietly ignoring it could drop a deny rule the user
 believes is in force.
+
+## Agents run unprivileged
+
+Agents run as an unprivileged user inside the sandbox, reusing whatever user at
+uid 1000 the image already provides and creating one only if it does not. This
+is not optional polish: Claude Code refuses `--dangerously-skip-permissions` as
+root, so an agent running as root cannot work at all.
+
+They still get passwordless `sudo` **inside the sandbox**, because installing
+packages is a normal thing for an agent to do. That grants nothing beyond the
+VM — egress is enforced outside it, and the host filesystem is not reachable.
 
 ## Mounts that agents write to
 

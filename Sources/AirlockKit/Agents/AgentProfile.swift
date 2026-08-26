@@ -31,6 +31,13 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     public var environment: [String: String]
     /// Give this agent its own dockerd.
     public var docker: Bool
+    /// Run the agent as this unprivileged user rather than root.
+    ///
+    /// Agents increasingly refuse to run privileged — Claude Code declines
+    /// --dangerously-skip-permissions as root outright — and an agent has no
+    /// business being root inside its own VM either. The user is created on
+    /// first launch if the image lacks it.
+    public var runAsUser: String?
     /// MCP servers to run inside the sandbox, by preset name or full spec.
     public var mcp: [MCPServer]
     /// Where this agent reads its MCP configuration, inside the guest.
@@ -48,7 +55,8 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         environment: [String: String] = [:],
         docker: Bool = false,
         mcp: [MCPServer] = [],
-        mcpConfigPath: String? = nil
+        mcpConfigPath: String? = nil,
+        runAsUser: String? = nil
     ) {
         self.name = name
         self.displayName = displayName
@@ -62,6 +70,7 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         self.docker = docker
         self.mcp = mcp
         self.mcpConfigPath = mcpConfigPath
+        self.runAsUser = runAsUser
     }
 
     /// Everything the sandbox must be able to reach: the agent's own rules plus
@@ -103,7 +112,7 @@ extension AgentProfile {
             image: "docker.io/library/node:22-bookworm-slim",
             install: [
                 "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
-                    + "git curl ca-certificates ripgrep less",
+                    + "git curl ca-certificates ripgrep less sudo python3 python3-pip",
                 "npm install -g @anthropic-ai/claude-code",
             ],
             command: ["claude", "--dangerously-skip-permissions"],
@@ -115,7 +124,8 @@ extension AgentProfile {
             // It reads .claude.json as a file beside the directory, not inside
             // it, and refuses to start without it.
             mounts: ["~/.claude:/root/.claude:copy", "~/.claude.json:/root/.claude.json:copy"],
-            mcpConfigPath: "/root/.mcp.json"
+            mcpConfigPath: "/root/.mcp.json",
+            runAsUser: "agent"
         ),
         AgentProfile(
             name: "codex",
@@ -123,7 +133,7 @@ extension AgentProfile {
             image: "docker.io/library/node:22-bookworm-slim",
             install: [
                 "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
-                    + "git curl ca-certificates ripgrep less",
+                    + "git curl ca-certificates ripgrep less sudo python3 python3-pip",
                 "npm install -g @openai/codex",
             ],
             command: ["codex"],
@@ -131,7 +141,8 @@ extension AgentProfile {
                 + commonToolingEgress + gitEgress,
             secrets: ["openai"],
             mounts: ["~/.codex:/root/.codex:copy"],
-            mcpConfigPath: "/root/.mcp.json"
+            mcpConfigPath: "/root/.mcp.json",
+            runAsUser: "agent"
         ),
         AgentProfile(
             name: "gemini",
@@ -139,7 +150,7 @@ extension AgentProfile {
             image: "docker.io/library/node:22-bookworm-slim",
             install: [
                 "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
-                    + "git curl ca-certificates ripgrep less",
+                    + "git curl ca-certificates ripgrep less sudo python3 python3-pip",
                 "npm install -g @google/gemini-cli",
             ],
             command: ["gemini"],
@@ -150,7 +161,8 @@ extension AgentProfile {
             ] + commonToolingEgress + gitEgress,
             secrets: ["gemini"],
             mounts: ["~/.gemini:/root/.gemini:copy"],
-            mcpConfigPath: "/root/.mcp.json"
+            mcpConfigPath: "/root/.mcp.json",
+            runAsUser: "agent"
         ),
         AgentProfile(
             name: "opencode",
@@ -158,7 +170,7 @@ extension AgentProfile {
             image: "docker.io/library/node:22-bookworm-slim",
             install: [
                 "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
-                    + "git curl ca-certificates ripgrep less",
+                    + "git curl ca-certificates ripgrep less sudo python3 python3-pip",
                 "npm install -g opencode-ai",
             ],
             command: ["opencode"],
@@ -166,7 +178,8 @@ extension AgentProfile {
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic"],
             mounts: ["~/.config/opencode:/root/.config/opencode:copy"],
-            mcpConfigPath: "/root/.mcp.json"
+            mcpConfigPath: "/root/.mcp.json",
+            runAsUser: "agent"
         ),
         AgentProfile(
             name: "shell",
@@ -174,7 +187,7 @@ extension AgentProfile {
             image: "docker.io/library/debian:bookworm-slim",
             install: [
                 "apt-get update -qq && apt-get install -y -qq --no-install-recommends "
-                    + "git curl ca-certificates ripgrep less vim"
+                    + "git curl ca-certificates ripgrep less vim sudo python3"
             ],
             command: ["/bin/bash"],
             allow: commonToolingEgress + gitEgress
