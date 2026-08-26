@@ -128,6 +128,28 @@ check "stop marks it stopped" "acceptance-box.*stopped" "$($B ls 2>&1)"
 $B rm acceptance-box >/dev/null 2>&1
 check_absent "rm removes it" "acceptance-box" "$($B ls 2>&1)"
 
+echo "== config precedence =="
+
+# A deny in config is a machine-wide block. If a flag could lift it, an
+# operator could not rely on it, so this is a security property not a
+# preference.
+CONFIG="$HOME/.airlock/config.json"
+SAVED=""
+[ -f "$CONFIG" ] && SAVED=$(cat "$CONFIG")
+
+"$B" config unset deny >/dev/null 2>&1
+out=$($B run "$CLONE_IMAGE" --no-tty --allow example.com -- /bin/sh -c \
+  'curl -s -m 8 -o /dev/null http://example.com && echo REACHED || echo BLOCKED' 2>&1)
+check "control: allowed host is reachable" "REACHED" "$out"
+
+"$B" config set deny example.com >/dev/null 2>&1
+out=$($B run "$CLONE_IMAGE" --no-tty --allow example.com -- /bin/sh -c \
+  'curl -s -m 8 -o /dev/null http://example.com && echo REACHED || echo BLOCKED' 2>&1)
+check "config deny cannot be flagged away" "BLOCKED" "$out"
+
+"$B" config unset deny >/dev/null 2>&1
+if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
+
 echo "== credentials =="
 
 SECRET="sk-acceptance-not-a-real-key"

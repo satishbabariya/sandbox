@@ -12,7 +12,7 @@ struct Airlock: AsyncParsableCommand {
             StopCommand.self, RemoveCommand.self, LogsCommand.self,
             PruneCommand.self, PortsCommand.self, CopyCommand.self,
             PolicyCommand.self, SecretCommand.self, AgentsCommand.self,
-            DoctorCommand.self, KernelCommand.self,
+            DoctorCommand.self, KernelCommand.self, ConfigCommand.self,
             SuperviseCommand.self,
         ]
     )

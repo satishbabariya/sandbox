@@ -231,3 +231,59 @@ struct PortForwardTests {
         #expect(throws: (any Error).self) { try PortForward.parse(spec) }
     }
 }
+
+@Suite("AirlockConfig")
+struct AirlockConfigTests {
+    private func tempPaths() -> AirlockPaths {
+        AirlockPaths(
+            root: URL(filePath: NSTemporaryDirectory())
+                .appending(path: "airlock-config-\(UInt32.random(in: 0..<0xFFFF_FFFF))"))
+    }
+
+    @Test("absent config yields defaults rather than failing")
+    func absentIsFine() throws {
+        let config = try AirlockConfig.load(tempPaths())
+        #expect(config.defaultAgent == nil)
+        #expect(config.allow.isEmpty)
+        #expect(config.deny.isEmpty)
+    }
+
+    @Test("round-trips")
+    func roundTrip() throws {
+        let paths = tempPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+
+        let config = AirlockConfig(
+            defaultAgent: "claude", cpus: 8, memory: "8g",
+            allow: ["*.internal.corp"], deny: ["evil.com"], clone: true,
+            secrets: ["anthropic"])
+        try config.save(paths)
+
+        #expect(try AirlockConfig.load(paths) == config)
+    }
+
+    @Test("a malformed config is an error, never silently ignored")
+    func malformedIsLoud() throws {
+        let paths = tempPaths()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try FileManager.default.createDirectory(
+            at: paths.root, withIntermediateDirectories: true)
+        try "{ not json".write(
+            to: AirlockConfig.path(paths), atomically: true, encoding: .utf8)
+
+        // Falling back to defaults here could silently drop a deny rule the
+        // user believes is in force.
+        #expect(throws: ConfigError.self) { try AirlockConfig.load(paths) }
+    }
+
+    @Test("rejects a bad pattern before it is written")
+    func validatesPatterns() throws {
+        let config = AirlockConfig(allow: ["*bad.com"])
+        #expect(throws: PolicyError.self) { try config.validate() }
+    }
+
+    @Test("rejects a nonsensical cpu count")
+    func validatesCPUs() throws {
+        #expect(throws: ConfigError.self) { try AirlockConfig(cpus: 0).validate() }
+    }
+}

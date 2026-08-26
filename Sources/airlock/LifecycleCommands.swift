@@ -157,14 +157,11 @@ struct ListCommand: AsyncParsableCommand {
         let rows =
             [["NAME", "STATE", "IMAGE", "EGRESS", "CREATED"]]
             + records.map { record in
-                let egress =
-                    record.allow.isEmpty
-                    ? "none" : record.allow.joined(separator: ",")
-                return [
+                [
                     record.name,
                     record.state.rawValue,
-                    record.image,
-                    egress,
+                    Self.shortImage(record.image),
+                    Self.summariseEgress(record.allow),
                     Self.age(record.createdAt),
                 ]
             }
@@ -179,6 +176,25 @@ struct ListCommand: AsyncParsableCommand {
             }.joined(separator: "  ")
             print(line)
         }
+    }
+
+    /// An agent profile carries a dozen or more rules, and printing them all
+    /// makes the table unreadable. Show the first and a count.
+    static func summariseEgress(_ allow: [String]) -> String {
+        guard let first = allow.first else { return "none" }
+        if allow.count == 1 { return first }
+        return "\(first) +\(allow.count - 1)"
+    }
+
+    /// Registry and namespace are noise in a list; the tag is not.
+    static func shortImage(_ reference: String) -> String {
+        var text = reference
+        for prefix in ["docker.io/library/", "docker.io/", "ghcr.io/"]
+        where text.hasPrefix(prefix) {
+            text = String(text.dropFirst(prefix.count))
+            break
+        }
+        return text
     }
 
     static func age(_ date: Date) -> String {

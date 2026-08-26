@@ -220,6 +220,21 @@ $ airlock ls / logs / stop / rm / prune
 Each detached sandbox is held by its own supervisor process with its own
 gateway — no daemon to manage, and no shared component between sandboxes.
 
+## Defaults
+
+```console
+$ airlock config set defaultAgent claude   # then just: airlock run
+$ airlock config set cpus 8
+$ airlock config set deny internal.example.com
+$ airlock config show
+```
+
+Flags override config, with one deliberate exception: **`deny` is additive and
+cannot be weakened by a flag.** An operator can pin a block for every sandbox
+on the machine and rely on it. A config file that will not parse is an error,
+never a silent fallback — quietly ignoring it could drop a deny rule the user
+believes is in force.
+
 ## Protecting your working tree
 
 ```console

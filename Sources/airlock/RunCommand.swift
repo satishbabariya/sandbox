@@ -19,8 +19,10 @@ struct RunCommand: AsyncParsableCommand {
             """
     )
 
-    @Argument(help: "Agent name (see 'airlock agents ls') or a container image.")
-    var target: String
+    @Argument(
+        help: "Agent name (see 'airlock agents ls') or a container image. Defaults to the configured agent."
+    )
+    var target: String?
 
     @Argument(parsing: .postTerminator, help: "Command to run inside the sandbox, after --.")
     var command: [String] = []
@@ -34,11 +36,11 @@ struct RunCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Sandbox name. Defaults to a generated one.")
     var name: String?
 
-    @Option(name: .long, help: "Number of CPUs.")
-    var cpus: Int = 4
+    @Option(name: .long, help: "Number of CPUs. Default 4, or the configured value.")
+    var cpus: Int?
 
-    @Option(name: .long, help: "Memory, e.g. 4g or 512m.")
-    var memory: String = "4g"
+    @Option(name: .long, help: "Memory, e.g. 4g or 512m. Default 4g, or the configured value.")
+    var memory: String?
 
     @Option(name: .shortAndLong, help: "Host directory to mount at /workspace. Defaults to the current directory for agents.")
     var workspace: String?
@@ -75,23 +77,17 @@ struct RunCommand: AsyncParsableCommand {
 
     @Option(
         name: .long,
-        help: """
-            Inject a stored secret for this service; repeatable. The guest             receives a sentinel, never the value.
-            """)
+        help: "Inject a stored secret for this service; repeatable. The guest receives a sentinel, never the value.")
     var secret: [String] = []
 
     @Flag(
         name: .long,
-        help: """
-            Run a private dockerd inside the sandbox, on its own disk. Implies             --privileged. Containers it starts sit behind the same egress             policy. The image must already contain dockerd.
-            """)
+        help: "Run a private dockerd inside the sandbox, on its own disk. Implies --privileged; the image must contain dockerd.")
     var docker: Bool = false
 
     @Flag(
         name: .long,
-        help: """
-            Grant every Linux capability inside the sandbox. Does not weaken             egress policy, which is enforced outside the guest.
-            """)
+        help: "Grant every Linux capability inside the sandbox. Does not weaken egress policy.")
     var privileged: Bool = false
 
     func run() async throws {
@@ -102,6 +98,15 @@ struct RunCommand: AsyncParsableCommand {
         let store = SandboxStore(paths: paths)
         let registry = AgentRegistry()
         let gateway = InstallLayout.gatewayBinary()
+        let config = try AirlockConfig.load(paths)
+
+        // A bare `airlock run` uses the configured default agent, so the
+        // common case is one word.
+        guard let target = self.target ?? config.defaultAgent else {
+            throw ValidationError(
+                "no agent or image given, and no defaultAgent configured; "
+                    + "try 'airlock run shell' or 'airlock config set defaultAgent claude'")
+        }
 
         // `airlock run claude` and `airlock run alpine:3.20` are both valid.
         // The registry decides which this is, so a user-defined agent named
@@ -115,13 +120,19 @@ struct RunCommand: AsyncParsableCommand {
             ?? "airlock-\(UInt32.random(in: 0..<0xFFFF_FFFF))"
         try SandboxStore.validate(name: id)
 
-        // A profile's rules are the floor; --allow adds to them.
-        var effectiveAllow = allow + (profile?.allow ?? [])
-        var effectiveSecrets = secret + (profile?.secrets ?? [])
-        var effectiveMounts = mount + (profile?.mounts ?? [])
+        // A profile's rules and any config rules are the floor; flags add to
+        // them. deny is deliberately additive so a machine-wide block cannot be
+        // flagged away.
+        let effectiveAllow = allow + (profile?.allow ?? []) + config.allow
+        let effectiveDeny = deny + config.deny
+        let effectiveSecrets = secret + (profile?.secrets ?? []) + config.secrets
+        let effectiveMounts = mount + (profile?.mounts ?? [])
+        let effectiveClone = clone || (config.clone ?? false)
+        let effectiveCpus = cpus ?? config.cpus ?? 4
+        let effectiveMemory = memory ?? config.memory ?? "4g"
         if command.isEmpty, let profile { command = profile.command }
 
-        let policy = try NetworkPolicy(allow: effectiveAllow, deny: deny)
+        let policy = try NetworkPolicy(allow: effectiveAllow, deny: effectiveDeny)
         let forwards = try publish.map(PortForward.parse)
 
         if let existing = try? store.load(id), existing.state == .running {
@@ -172,9 +183,9 @@ struct RunCommand: AsyncParsableCommand {
             image: image,
             command: command,
             allow: launchAllow,
-            deny: deny,
-            cpus: cpus,
-            memoryInBytes: try Self.parseMemory(memory),
+            deny: effectiveDeny,
+            cpus: effectiveCpus,
+            memoryInBytes: try Self.parseMemory(effectiveMemory),
             privileged: privileged || docker,
             secrets: effectiveSecrets,
             docker: docker || (profile?.docker ?? false),
@@ -182,7 +193,7 @@ struct RunCommand: AsyncParsableCommand {
             preparedRootfs: preparedRootfs,
             agent: profile?.name,
             ports: publish,
-            clone: clone
+            clone: effectiveClone
         )
         launch.environment = profile?.environment ?? [:]
         // An agent with no explicit workspace should see the directory the
