@@ -627,6 +627,26 @@ public actor Sandbox {
         return process
     }
 
+    /// Flush and hold the root filesystem still, run `body`, then release it.
+    ///
+    /// Copying a live filesystem can capture a half-written state. Freezing
+    /// first makes the copy consistent; the thaw runs even if `body` throws,
+    /// because leaving a sandbox frozen would wedge it.
+    public func withFrozenFilesystem<T: Sendable>(
+        _ body: @Sendable () async throws -> T
+    ) async throws -> T {
+        guard let container else { throw SandboxError.notRunning }
+        try await container.filesystemOperation(operation: .freeze, path: "/")
+        do {
+            let result = try await body()
+            try? await container.filesystemOperation(operation: .thaw, path: "/")
+            return result
+        } catch {
+            try? await container.filesystemOperation(operation: .thaw, path: "/")
+            throw error
+        }
+    }
+
     /// Tell the guest its terminal changed size.
     public func resize(to size: Terminal.Size) async throws {
         guard let container else { throw SandboxError.notRunning }

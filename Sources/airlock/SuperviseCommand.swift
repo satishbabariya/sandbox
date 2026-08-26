@@ -151,6 +151,21 @@ struct SuperviseCommand: AsyncParsableCommand {
                 } catch {
                     ControlServer.send(.failure("\(error)"), to: client)
                 }
+            case .snapshot(let destination):
+                do {
+                    // Freeze so the copy cannot capture a half-written state.
+                    try await sandbox.withFrozenFilesystem {
+                        try TemplateStore(paths: paths).save(
+                            from: paths.containerRoot(launch.name)
+                                .appending(path: "rootfs.ext4"),
+                            as: URL(filePath: destination).deletingPathExtension()
+                                .lastPathComponent,
+                            overwrite: true)
+                    }
+                    ControlServer.send(.snapshotted, to: client)
+                } catch {
+                    ControlServer.send(.failure("\(error)"), to: client)
+                }
             case .stop:
                 ControlServer.send(.exited(status: 0), to: client)
                 await shutdown.signal()

@@ -30,6 +30,8 @@ public enum ControlRequest: Codable, Sendable, Equatable {
     case copyIn(hostPath: String, guestPath: String)
     /// Copy a sandbox path out to the host.
     case copyOut(guestPath: String, hostPath: String)
+    /// Quiesce the filesystem and copy it to `destination` on the host.
+    case snapshot(destination: String)
 }
 
 public enum ControlResponse: Codable, Sendable, Equatable {
@@ -42,6 +44,7 @@ public enum ControlResponse: Codable, Sendable, Equatable {
     case policyLog([PolicyAuditRecord])
     case failure(String)
     case copied
+    case snapshotted
 }
 
 public enum OutputStream: String, Codable, Sendable, Equatable {

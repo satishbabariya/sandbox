@@ -244,6 +244,21 @@ $ airlock ls / logs / stop / rm / prune
 Each detached sandbox is held by its own supervisor process with its own
 gateway — no daemon to manage, and no shared component between sandboxes.
 
+## Templates
+
+```console
+$ airlock run shell --name box -d
+$ airlock exec box -- <configure it by hand>
+$ airlock snapshot box my-setup
+$ airlock run shell --template my-setup
+```
+
+An agent environment is reproducible from its profile. A template is the other
+thing: a sandbox you configured by hand — extra packages, a checked-out branch,
+a logged-in CLI — captured so the next one starts from it. The filesystem is
+frozen for the copy, so a template is consistent rather than a snapshot of a
+half-written state.
+
 ## Defaults
 
 ```console
@@ -310,12 +325,13 @@ disagreed with the enforcement point would be worse than no CLI.
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
 arbitrary mounts, `--clone`, `--privileged`, in-sandbox MCP servers, a config
-file, interactive terminals, `doctor`, `kernel install`.
+file, templates and snapshots, interactive terminals, `doctor`,
+`kernel install`.
 
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
 interception), dynamic filesystem approval (`VZHotplugProvider`),
 kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
-divergence — see above), OAuth credential flows, x86 emulation.
+divergence — see above), OAuth credential flows, a TUI, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation

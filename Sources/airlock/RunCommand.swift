@@ -56,6 +56,9 @@ struct RunCommand: AsyncParsableCommand {
         help: "Add an MCP server by name (filesystem, git, github, fetch); repeatable.")
     var mcp: [String] = []
 
+    @Option(name: .long, help: "Start from a saved template instead of a fresh image.")
+    var template: String?
+
     @Flag(
         name: .long,
         help: "Work on a private git clone of the workspace instead of your tree.")
@@ -179,11 +182,20 @@ struct RunCommand: AsyncParsableCommand {
                 Data("airlock: no --allow rules; this sandbox reaches nothing\n".utf8))
         }
 
-        // Install the agent once; later runs clone the cached filesystem.
+        // A template is a filesystem someone configured by hand, so it wins
+        // over the agent's reproducible cached environment.
         var preparedRootfs: String?
+        if let template {
+            let templates = TemplateStore(paths: paths)
+            guard templates.exists(template) else {
+                throw TemplateError.notFound(template)
+            }
+            preparedRootfs = templates.path(template).path(percentEncoded: false)
+        }
+
         var profileWithMCP = profile
         if profileWithMCP != nil { profileWithMCP?.mcp = servers }
-        if let profile = profileWithMCP, !profile.allInstall.isEmpty {
+        if let profile = profileWithMCP, !profile.allInstall.isEmpty, template == nil {
             let preparer = AgentPreparer(paths: paths)
             let cache = RootfsCache(paths: paths)
             if rebuild || !cache.isCached(profile) {
