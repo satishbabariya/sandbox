@@ -117,6 +117,15 @@ struct RunCommand: AsyncParsableCommand {
         let paths = AirlockPaths()
         let store = SandboxStore(paths: paths)
         let registry = AgentRegistry()
+        // A profile that cannot be decoded is not an agent, so the name falls
+        // through to being treated as an image and fails with a message about
+        // image references. Say what actually happened.
+        for (url, error) in registry.profiles().broken {
+            FileHandle.standardError.write(
+                Data(
+                    "airlock: ignoring agent profile \(url.lastPathComponent): \(error)\n"
+                        .utf8))
+        }
         let gateway = InstallLayout.gatewayBinary()
         let config = try AirlockConfig.load(paths)
 
@@ -156,6 +165,19 @@ struct RunCommand: AsyncParsableCommand {
             if !servers.contains(where: { $0.name == preset.name }) {
                 servers.append(preset)
             }
+        }
+
+        // An MCP server is installed while an agent's environment is built and
+        // is declared in a file at a path the agent's profile names. A raw
+        // image has neither, so the flag could only be silently ignored -- and
+        // it would be ignored after booting a VM and running the workload,
+        // which is a slow way to find out.
+        if !mcp.isEmpty, profile == nil {
+            throw ValidationError(
+                "--mcp needs an agent: MCP servers are installed into an agent's "
+                    + "cached environment and declared where its profile says.\n"
+                    + "Run an agent (airlock agents ls), or add the server to a "
+                    + "profile with: airlock agents edit <name>")
         }
 
         let effectiveAllow =

@@ -334,16 +334,30 @@ public struct AgentRegistry: Sendable {
     }
 
     public func userProfiles() -> [AgentProfile] {
+        profiles().valid
+    }
+
+    /// User profiles, alongside the files that could not be read.
+    ///
+    /// A profile that fails to decode used to be dropped in silence, and the
+    /// only symptom was `airlock run <name>` deciding the name must be an image
+    /// and reporting "invalid domain for image reference" -- which says nothing
+    /// about the profile sitting right there.
+    public func profiles() -> (valid: [AgentProfile], broken: [(URL, any Error)]) {
         let urls =
             (try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil)) ?? []
-        return
-            urls
-            .filter { $0.pathExtension == "json" }
-            .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                return try? JSONDecoder().decode(AgentProfile.self, from: data)
+        var valid: [AgentProfile] = []
+        var broken: [(URL, any Error)] = []
+        for url in urls where url.pathExtension == "json" {
+            do {
+                let data = try Data(contentsOf: url)
+                valid.append(try JSONDecoder().decode(AgentProfile.self, from: data))
+            } catch {
+                broken.append((url, error))
             }
+        }
+        return (valid, broken)
     }
 
     public func profile(named name: String) throws -> AgentProfile {

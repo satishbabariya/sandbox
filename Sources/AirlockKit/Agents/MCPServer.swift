@@ -39,6 +39,27 @@ public struct MCPServer: Codable, Sendable, Equatable {
         self.install = install
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case name, command, args, env, allow, install
+    }
+
+    /// Only the name and the command are required, for the same reason they are
+    /// the only required fields on a profile: a server declared by hand should
+    /// not have to state four empty collections, and a profile written by an
+    /// older airlock must keep decoding after a field is added. The registry
+    /// drops a profile it cannot decode, so a strict decode here would take the
+    /// whole agent with it.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try c.decode(String.self, forKey: .name),
+            command: try c.decode(String.self, forKey: .command),
+            args: try c.decodeIfPresent([String].self, forKey: .args) ?? [],
+            env: try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:],
+            allow: try c.decodeIfPresent([String].self, forKey: .allow) ?? [],
+            install: try c.decodeIfPresent([String].self, forKey: .install) ?? [])
+    }
+
     /// Servers people reach for most often, so a profile can name one.
     public static let presets: [String: MCPServer] = [
         "filesystem": MCPServer(

@@ -360,6 +360,21 @@ public actor Sandbox {
                 config.process.arguments = spec.command
             }
 
+            if let user = spec.runAsUser {
+                config.process.arguments = Self.dropPrivilegeBootstrap(
+                    wrapping: config.process.arguments,
+                    user: user,
+                    workspace: spec.workspaceDestination,
+                    cloned: spec.workspace != nil && spec.cloneWorkspace)
+            }
+
+            // Applied after the privilege drop, so it runs before it, as root.
+            // Every built-in agent that declares MCP servers also drops
+            // privilege and names a path under /root, which an unprivileged
+            // process cannot write -- the config never appeared. Writing it as
+            // root also puts it where the drop's own copy step expects to find
+            // it, which is why .mcp.json is in that list.
+            //
             // Written at startup rather than baked into the cached rootfs, so
             // changing which servers an agent uses does not force a rebuild.
             if let mcpPath = spec.mcpConfigPath, !spec.mcp.isEmpty,
@@ -369,14 +384,6 @@ public actor Sandbox {
                     wrapping: config.process.arguments,
                     path: mcpPath,
                     contents: rendered)
-            }
-
-            if let user = spec.runAsUser {
-                config.process.arguments = Self.dropPrivilegeBootstrap(
-                    wrapping: config.process.arguments,
-                    user: user,
-                    workspace: spec.workspaceDestination,
-                    cloned: spec.workspace != nil && spec.cloneWorkspace)
             }
 
             // Each wrapper is applied around the last, so the one applied last

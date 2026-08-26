@@ -407,6 +407,67 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c \
   'S=$(date +%s); getent hosts "$(hostname)" >/dev/null 2>&1; echo "ELAPSED=$(($(date +%s)-S))"' 2>&1)
 check "the sandbox resolves its own hostname immediately" "ELAPSED=0" "$out"
 
+echo "== published ports =="
+
+# Two servers, one port published. Publishing must expose exactly what was
+# asked for: a sandbox that opened every listening port to the host would be a
+# far larger surface than the user agreed to.
+$B rm portcase --force >/dev/null 2>&1
+$B run docker.io/library/python:3.12-alpine --name portcase --detach --no-tty \
+  -p 18231:8231 -- /bin/sh -c '
+    mkdir -p /a /b
+    echo PUBLISHED_PORT >/a/index.html
+    echo UNPUBLISHED_PORT >/b/index.html
+    python3 -m http.server 8232 --directory /b &
+    python3 -m http.server 8231 --directory /a' >/dev/null 2>&1
+
+# Give both servers time to bind before concluding anything about either.
+for _ in 1 2 3 4 5 6 7 8; do
+  curl -sf --max-time 2 http://127.0.0.1:18231/index.html >/dev/null 2>&1 && break
+  sleep 1
+done
+
+check "airlock ports names the mapping" "18231 -> 8231" "$($B ports portcase 2>&1)"
+check "a published port is reachable from the host" "PUBLISHED_PORT" \
+  "$(curl -s --max-time 8 http://127.0.0.1:18231/index.html 2>&1)"
+# The control above proves the guest is up and serving, so a failure here is
+# the port being closed rather than the sandbox being dead.
+check_absent "an unpublished port is not reachable from the host" "UNPUBLISHED_PORT" \
+  "$(curl -s --max-time 5 http://127.0.0.1:8232/index.html 2>&1)"
+# ...and the unpublished server really is listening inside the guest, or the
+# check above would pass for the wrong reason.
+check "control: the unpublished server is up inside the guest" "UNPUBLISHED_PORT" \
+  "$($B exec portcase -- /bin/sh -c 'wget -q -O- http://127.0.0.1:8232/index.html' 2>&1)"
+
+$B rm portcase --force >/dev/null 2>&1
+
+echo "== MCP servers are declared to the agent =="
+
+# Every built-in agent that declares MCP servers also drops privilege and names
+# a config path under /root. Writing that file after the drop cannot work, and
+# the symptom is an agent that simply has no servers.
+rm -f "$AGENTS_DIR/acceptmcp.json"
+cat >"$AGENTS_DIR/acceptmcp.json" <<'PROFILE'
+{"name":"acceptmcp","displayName":"mcp acceptance",
+ "image":"docker.io/library/debian:bookworm-slim",
+ "runAsUser":"agent","mcpConfigPath":"/root/.mcp.json",
+ "mcp":[{"name":"demo","command":"/bin/true"}],
+ "command":["/bin/sh","-c","echo uid=$(id -u); cat $HOME/.mcp.json 2>&1"]}
+PROFILE
+check "control: the MCP profile is registered" "acceptmcp" "$($B agents ls 2>&1)"
+out=$($B run acceptmcp --no-tty 2>&1)
+rm -f "$AGENTS_DIR/acceptmcp.json"
+
+check "control: the agent is unprivileged" "uid=1000" "$out"
+check "the server reaches the agent's own config" '"demo"' "$out"
+check_absent "the config is not left unwritten" "could not write" "$out"
+
+# The flag cannot work without an agent -- the server is installed into an
+# agent's cached environment and declared where its profile says -- so it is
+# refused rather than ignored after booting a VM.
+out=$($B run "$IMAGE" --no-tty --mcp filesystem -- /bin/true 2>&1)
+check "--mcp without an agent is refused, not ignored" "needs an agent" "$out"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
