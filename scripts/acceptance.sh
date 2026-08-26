@@ -125,6 +125,43 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
   wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
 check_absent "there is no IPv6 way out" "ESCAPED" "$out"
 
+echo "== interception is scoped to the domains a credential is bound to =="
+
+# Substituting a credential means terminating TLS, so the guest is given a CA
+# to trust. If that were used for everything, airlock would read all of the
+# agent's traffic in clear -- a far larger claim on a user's trust than
+# brokering one API key. Asked by trusting only airlock's CA and seeing which
+# host verifies against it.
+printf '%s' "sk-scope-probe" | $B secret set anthropic --stdin >/dev/null 2>&1
+out=$($B run docker.io/library/python:3.12-alpine --no-tty --secret anthropic \
+  --allow example.com -- python3 -c '
+import socket, ssl
+
+def verifies(host, cafile):
+    ctx = ssl.create_default_context(cafile=cafile)
+    try:
+        with socket.create_connection((host, 443), timeout=10) as raw:
+            with ctx.wrap_socket(raw, server_hostname=host):
+                return "yes"
+    except ssl.SSLCertVerificationError:
+        return "no"
+    except Exception as e:
+        return type(e).__name__
+
+CA = "/etc/airlock/airlock-ca.crt"
+for host in ["api.anthropic.com", "example.com"]:
+    print(host, "airlock=" + verifies(host, CA))
+' 2>&1)
+check "a bound domain is intercepted" "api.anthropic.com airlock=yes" "$out"
+check "an unbound domain is not" "example.com airlock=no" "$out"
+
+# The key that would let anything be intercepted never leaves the host.
+out=$($B run "$IMAGE" --no-tty --secret anthropic -- /bin/sh -c \
+  'ls /etc/airlock/; grep -rl "PRIVATE KEY" /etc/airlock /etc/ssl 2>/dev/null | head -2' 2>&1)
+check "the guest is given the certificate" "airlock-ca.crt" "$out"
+check_absent "and never the private key" "PRIVATE KEY" "$out"
+$B secret rm anthropic >/dev/null 2>&1
+
 echo "== other accounts on this machine see nothing =="
 
 # A sandbox's runtime directory sits in /tmp and holds the console output of

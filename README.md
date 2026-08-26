@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 114 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 118 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -109,6 +109,7 @@ default for being awkward.
 | **Guest POSTs to the gateway's forwarder API** | refused; no host port appears, while `-p` still publishes on loopback |
 | DNS over TCP for a denied name | `REFUSED`, while an allowed name resolves |
 | Runtime and state directories | `drwx------`; another account cannot read an agent's console log |
+| **TLS interception scope** | a bound domain verifies against airlock's CA; an unbound one does not, and the CA key never leaves the host |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
@@ -247,6 +248,13 @@ Presets: `filesystem`, `git`, `github`, `fetch`. Declare others in an agent
 profile.
 
 ## Credentials the sandbox never holds
+
+Substituting a credential means terminating TLS, so the guest is given a CA to
+trust. That CA is used **only for the domains a credential is bound to**:
+asked to verify against airlock's CA alone, `api.anthropic.com` does and
+`example.com` does not — the guest sees the real chain for everything else.
+The private key stays on the host and is never shared into the sandbox.
+
 
 ```console
 $ airlock secret set anthropic          # stored in the macOS Keychain
