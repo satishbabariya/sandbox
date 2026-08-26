@@ -367,6 +367,7 @@ echo "== provisioned files and startup commands =="
 # corrupts the file or executes in the guest's own bootstrap.
 AGENTS_DIR="$HOME/.airlock/agents"
 mkdir -p "$AGENTS_DIR"
+rm -f "$AGENTS_DIR/acceptprov.json"
 cat >"$AGENTS_DIR/acceptprov.json" <<'PROFILE'
 {"name":"acceptprov","displayName":"provisioning acceptance",
  "image":"docker.io/library/python:3.12-alpine",
@@ -379,6 +380,12 @@ cat >"$AGENTS_DIR/acceptprov.json" <<'PROFILE'
    {"argv":["/bin/sh","-c","python3 -m http.server 8231 --directory /srv"],"background":true},
    {"argv":["/bin/false"]}]}
 PROFILE
+
+# Without this control, a profile that failed to register would fail every
+# assertion below at once, and the seven failures would say nothing about why.
+# The registry drops a profile it cannot decode rather than complaining.
+check "control: the provisioning profile is registered" "acceptprov" \
+  "$($B agents ls 2>&1)"
 
 out=$($B run acceptprov --no-tty 2>&1)
 rm -f "$AGENTS_DIR/acceptprov.json"
