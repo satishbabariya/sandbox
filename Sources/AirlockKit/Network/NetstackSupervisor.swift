@@ -94,6 +94,8 @@ public actor NetstackSupervisor {
 
     /// Services named by a binding that had no secret stored.
     public private(set) var missingSecrets: [String] = []
+    /// Services whose OAuth token has expired on the host.
+    public private(set) var expiredSecrets: [String] = []
 
     public init(binary: URL, configuration: Configuration, logger: Logger? = nil) {
         self.binary = binary
@@ -169,8 +171,10 @@ public actor NetstackSupervisor {
     /// user, and the gateway running as this user, can read them.
     private func writeBrokerConfiguration() throws {
         guard !config.credentials.isEmpty else { return }
-        let (resolved, missing) = BrokerConfiguration.resolve(bindings: config.credentials)
+        let (resolved, missing, expired) = BrokerConfiguration.resolve(
+            bindings: config.credentials)
         self.missingSecrets = missing
+        self.expiredSecrets = expired
         guard !resolved.credentials.isEmpty else { return }
 
         // The CA lands in its own directory; the secrets stay in the parent,

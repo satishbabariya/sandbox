@@ -206,6 +206,22 @@ public actor Sandbox {
         let link = try await supervisor.start()
         self.netstack = supervisor
 
+        // Silently starting without a credential the user asked for would
+        // surface later as an opaque 401 from inside the sandbox.
+        for service in await supervisor.missingSecrets {
+            logger?.warning("no credential for '\(service)'")
+            let message =
+                "airlock: no credential for '\(service)'; "
+                + "set one with 'airlock secret set \(service)'\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+        for service in await supervisor.expiredSecrets {
+            let message =
+                "airlock: the sign-in for '\(service)' has expired; "
+                + "sign in again on the host, or run 'airlock secret set \(service)'\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+
         // A dedicated block device for the image store. Layers are large and
         // churn, and keeping them off the rootfs means the sandbox's own disk
         // is not consumed by whatever the agent pulls.

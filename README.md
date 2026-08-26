@@ -83,6 +83,7 @@ Against live VMs on `alpine:3.20`:
 | `exec` into a running sandbox | same policy applies |
 | **container started by dockerd inside the sandbox** | same policy applies |
 | `--secret anthropic` | guest sees `airlock-managed`; real value absent from the guest |
+| `--secret claude` (host OAuth) | `HTTP 200` from the real API; token appears 0 times in the guest |
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 | **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
 
@@ -190,6 +191,28 @@ $ airlock run claude-image --secret anthropic -- claude
 Inside the sandbox, `ANTHROPIC_API_KEY` reads `airlock-managed`. The real value
 is substituted on the host, per request, and only for `api.anthropic.com` — so a
 sentinel copied out of the sandbox is worthless.
+
+### Reusing an OAuth sign-in
+
+If you are already signed in to Claude Code on the host, airlock reuses that
+sign-in without the token entering the sandbox:
+
+```console
+$ airlock run claude --secret claude
+```
+
+The token is read from the host keychain at request time and injected by the
+broker. macOS will ask you to authorise that the first time, which is correct —
+it is your credential, and something else wants it.
+
+Verified: inside the sandbox, a bare `curl` with **no authorisation header** gets
+`HTTP 200` from `api.anthropic.com`, while the token appears **zero** times in
+the guest's environment. The sandbox authenticates with a credential it does not
+have.
+
+An expired sign-in is reported rather than injected — a dead token would surface
+as a confusing 401 from inside the sandbox. An explicitly stored secret always
+wins over an OAuth token, since setting one is a deliberate act.
 
 Interception is deliberately narrow: only after policy has allowed the dial,
 only on 443, and only for a hostname a credential is bound to. Everything else
@@ -337,7 +360,9 @@ file, templates and snapshots, interactive terminals, `doctor`,
 **Not yet:** SNI inspection (hostname precision on shared CDN addresses without
 interception), dynamic filesystem approval (`VZHotplugProvider`),
 kit-format compatibility, host-side MCP gateway parity with sbx (a deliberate
-divergence — see above), OAuth credential flows, a TUI, x86 emulation.
+divergence — see above), OAuth flows beyond a host sign-in already present
+(airlock reuses one but does not perform the sign-in itself), a TUI,
+x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes
 file descriptors the guest already holds open. Until that is settled, revocation

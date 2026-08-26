@@ -103,7 +103,7 @@ extension AgentProfile {
             command: ["claude", "--dangerously-skip-permissions"],
             allow: ["api.anthropic.com", "statsig.anthropic.com", "sentry.io"]
                 + commonToolingEgress + gitEgress,
-            secrets: ["anthropic"],
+            secrets: ["anthropic", "claude"],
             mounts: ["~/.claude:/root/.claude"],
             mcpConfigPath: "/root/.mcp.json"
         ),

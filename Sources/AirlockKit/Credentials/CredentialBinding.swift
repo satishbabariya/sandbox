@@ -40,6 +40,10 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
         "gemini": CredentialBinding(
             service: "gemini", domain: "generativelanguage.googleapis.com",
             header: "x-goog-api-key", format: "{}"),
+        // Reuses an OAuth sign-in already on the host rather than a stored key.
+        "claude": CredentialBinding(
+            service: "claude", domain: "api.anthropic.com",
+            header: "authorization", format: "Bearer {}"),
     ]
 
     /// The environment variable an agent expects, set to the sentinel so tools
@@ -81,19 +85,39 @@ public struct BrokerConfiguration: Codable, Sendable, Equatable {
         self.credentials = credentials
     }
 
-    /// Resolve bindings against the keychain.
+    /// Resolve bindings to values.
     ///
     /// A binding whose secret is missing is skipped rather than fatal: the
     /// sandbox should still start, and the request will simply fail
     /// unauthenticated with a clear reason in the policy log.
+    ///
+    /// An explicitly stored secret wins over an OAuth token the agent already
+    /// holds, because setting one is a deliberate act and should not be
+    /// silently shadowed by a stale sign-in.
     public static func resolve(
         bindings: [CredentialBinding],
         store: SecretStore = SecretStore()
-    ) -> (BrokerConfiguration, missing: [String]) {
+    ) -> (BrokerConfiguration, missing: [String], expired: [String]) {
         var resolved: [ResolvedCredential] = []
         var missing: [String] = []
+        var expired: [String] = []
+
         for binding in bindings {
-            guard let secret = try? store.get(binding.service) else {
+            var secret = try? store.get(binding.service)
+
+            if secret == nil,
+                let (_, source) = CredentialBinding.oauthPreset(for: binding.service),
+                let credential = try? source.read()
+            {
+                if let expiry = credential.expiry, expiry < Date() {
+                    // Injecting a dead token would fail with a confusing 401.
+                    expired.append(binding.service)
+                } else {
+                    secret = credential.token
+                }
+            }
+
+            guard let secret else {
                 missing.append(binding.service)
                 continue
             }
@@ -104,6 +128,6 @@ public struct BrokerConfiguration: Codable, Sendable, Equatable {
                     value: binding.format.replacingOccurrences(of: "{}", with: secret)
                 ))
         }
-        return (BrokerConfiguration(credentials: resolved), missing)
+        return (BrokerConfiguration(credentials: resolved), missing, expired)
     }
 }

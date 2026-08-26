@@ -364,3 +364,63 @@ struct MCPTests {
         #expect(MCPServer.preset(for: name) != nil)
     }
 }
+
+@Suite("Host keychain credentials")
+struct HostKeychainTests {
+    private let sample: [String: Any] = [
+        "claudeAiOauth": [
+            "accessToken": "tok-abc123",
+            "expiresAt": 4_102_444_800_000,  // year 2100, in milliseconds
+            "scopes": ["a", "b"],
+        ]
+    ]
+
+    @Test("walks a nested path to the token")
+    func findsNestedToken() throws {
+        let value = HostKeychainSource.string(
+            at: ["claudeAiOauth", "accessToken"], in: sample)
+        #expect(value == "tok-abc123")
+    }
+
+    @Test("a path that does not resolve returns nil rather than guessing")
+    func missingPathIsNil() throws {
+        #expect(HostKeychainSource.string(at: ["nope"], in: sample) == nil)
+        #expect(HostKeychainSource.string(at: ["claudeAiOauth", "nope"], in: sample) == nil)
+        // A path that lands on a non-string must not be coerced.
+        #expect(HostKeychainSource.string(at: ["claudeAiOauth", "scopes"], in: sample) == nil)
+    }
+
+    @Test("reads a numeric expiry")
+    func readsExpiry() throws {
+        let value = HostKeychainSource.number(at: ["claudeAiOauth", "expiresAt"], in: sample)
+        #expect(value == 4_102_444_800_000)
+    }
+
+    @Test("milliseconds and seconds are both understood")
+    func expiryUnits() throws {
+        // Apps differ, and reading milliseconds as seconds would place the
+        // expiry ~50,000 years out and never flag a dead token.
+        let millis = 4_102_444_800_000.0
+        let seconds = 4_102_444_800.0
+        let fromMillis = Date(
+            timeIntervalSince1970: millis > 32_503_680_000 ? millis / 1000 : millis)
+        let fromSeconds = Date(
+            timeIntervalSince1970: seconds > 32_503_680_000 ? seconds / 1000 : seconds)
+        #expect(abs(fromMillis.timeIntervalSince(fromSeconds)) < 1)
+    }
+
+    @Test("claude has an OAuth preset bound to one domain")
+    func claudePreset() throws {
+        let preset = CredentialBinding.oauthPreset(for: "claude")
+        #expect(preset != nil)
+        #expect(preset?.0.domain == "api.anthropic.com")
+        #expect(preset?.0.format == "Bearer {}")
+        // A token must not be sendable anywhere else.
+        #expect(preset?.1.service == "Claude Code-credentials")
+    }
+
+    @Test("an unknown service has no OAuth preset")
+    func unknownHasNoPreset() throws {
+        #expect(CredentialBinding.oauthPreset(for: "nonsense") == nil)
+    }
+}
