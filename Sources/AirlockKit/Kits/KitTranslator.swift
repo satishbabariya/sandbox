@@ -138,9 +138,12 @@ public enum KitError: Error, CustomStringConvertible {
                 airlock cannot build from sandbox.build yet, so the kit needs a prebuilt image
                 """
         case .mixinNotSupported(let name):
+            // A mixin has no image and no command of its own, so there is
+            // nothing to run it as. It has to be layered onto a sandbox kit,
+            // which is what --with does.
             return """
-                '\(name)' is a mixin, which is meant to be composed onto a sandbox kit
-                airlock has no composition model; import the sandbox kit instead
+                '\(name)' is a mixin: it adds to a sandbox kit rather than being one
+                layer it onto a sandbox kit with: airlock kit inspect <sandbox-kit> --with \(name)
                 """
         case .notFound(let url):
             return "no spec.yaml at \(url.path)"
