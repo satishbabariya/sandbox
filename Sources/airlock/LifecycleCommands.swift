@@ -329,16 +329,25 @@ struct PruneCommand: AsyncParsableCommand {
         // /tmp, and nothing else would ever remove them.
         let orphans = Self.orphanedRuntimeDirectories(store: store)
         var gateways = 0
+        var supervisors = 0
         for directory in orphans {
             // Before the directory goes: the gateway's pid is in it, and the
             // gateway is what actually holds resources. Removing the directory
             // first would leave a process nothing could ever find again.
-            if Self.terminateGateway(in: directory) { gateways += 1 }
+            // The supervisor first: it owns the VM and the gateway, so
+            // stopping it is what actually frees the memory, and it takes the
+            // gateway with it on the way out.
+            if Self.terminate(pidFile: "supervisor.pid", in: directory) { supervisors += 1 }
+            if Self.terminate(pidFile: "gateway.pid", in: directory) { gateways += 1 }
             try? FileManager.default.removeItem(at: directory)
         }
         if !orphans.isEmpty {
             print("removed \(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
             removed += orphans.count
+        }
+        if supervisors > 0 {
+            print(
+                "stopped \(supervisors) orphaned supervisor\(supervisors == 1 ? "" : "s")")
         }
         if gateways > 0 {
             print("stopped \(gateways) orphaned gateway\(gateways == 1 ? "" : "s")")
@@ -347,12 +356,12 @@ struct PruneCommand: AsyncParsableCommand {
         if removed == 0 { print("nothing to prune") }
     }
 
-    /// Stop the gateway recorded in a runtime directory, if it is still alive.
+    /// Stop the process whose pid a runtime directory records, if it is alive.
     ///
     /// Returns whether one was actually signalled, so prune can say so rather
     /// than claiming to have tidied something it did not.
-    static func terminateGateway(in directory: URL) -> Bool {
-        let pidFile = directory.appending(path: "gateway.pid")
+    static func terminate(pidFile name: String, in directory: URL) -> Bool {
+        let pidFile = directory.appending(path: name)
         guard let text = try? String(contentsOf: pidFile, encoding: .utf8),
             let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines)),
             pid > 0

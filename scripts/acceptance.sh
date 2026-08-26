@@ -287,6 +287,7 @@ check "another sandbox cannot reach it at the same address" "unreachable" \
 echo "== cleanup =="
 
 count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
+count_supervisors() { pgrep -f "airlock supervise" 2>/dev/null | wc -l | tr -d " "; }
 # Other sandboxes may legitimately be running; compare against a baseline
 # rather than assuming this machine is otherwise idle.
 BASELINE_GATEWAYS=$(count_gateways)
@@ -541,15 +542,16 @@ check "your own files are untouched" "original" "$(cat "$INSTR_DIR/kept.txt" 2>&
 rm -rf "$INSTR_DIR"
 rm -f "$AGENTS_DIR/acceptinstr.json"
 
-echo "== an orphaned gateway is reaped =="
+echo "== orphaned processes are reaped =="
 
-# The gateway is a child process. Kill airlock with a signal it cannot handle,
-# or let a harness time it out, and the gateway outlives the sandbox holding a
-# socket and a policy for something that no longer exists. Seven of them
-# accumulated in one working session before this was noticed.
+# A sandbox is two processes: a supervisor holding the VM, and a gateway
+# holding its policy. Lose the record that names them -- a crash, an
+# interrupted rm -- and both keep running with nothing to belong to. The
+# supervisor is the one that matters: it holds the VM's memory.
 $B rm orphancase --force >/dev/null 2>&1
 $B prune >/dev/null 2>&1
 BASE_GW=$(count_gateways)
+BASE_SUP=$(count_supervisors)
 $B run "$IMAGE" --name orphancase --detach --no-tty -- /bin/sh -c 'sleep 120' >/dev/null 2>&1
 for _ in 1 2 3 4 5 6; do
   [ "$(count_gateways)" -gt "$BASE_GW" ] && break
@@ -557,12 +559,17 @@ for _ in 1 2 3 4 5 6; do
 done
 check "control: a running sandbox has a gateway" "yes" \
   "$([ "$(count_gateways)" -gt "$BASE_GW" ] && echo yes || echo no)"
+check "control: and a supervisor holding its VM" "yes" \
+  "$([ "$(count_supervisors)" -gt "$BASE_SUP" ] && echo yes || echo no)"
 
 # Remove the record behind its back, which is the state a crash leaves.
 rm -f "$HOME/.airlock/sandboxes/orphancase.json"
 out=$($B prune 2>&1)
+check "prune says it stopped the supervisor" "orphaned supervisor" "$out"
 check "prune says it stopped the gateway" "orphaned gateway" "$out"
-sleep 1
+sleep 2
+check "and the VM is not still resident" "yes" \
+  "$([ "$(count_supervisors)" -le "$BASE_SUP" ] && echo yes || echo no)"
 check "and the gateway is gone" "yes" \
   "$([ "$(count_gateways)" -le "$BASE_GW" ] && echo yes || echo no)"
 

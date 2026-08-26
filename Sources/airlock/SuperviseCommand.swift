@@ -49,6 +49,14 @@ struct SuperviseCommand: AsyncParsableCommand {
         record.supervisorPID = ProcessInfo.processInfo.processIdentifier
         try store.save(record)
 
+        // Also written beside the gateway's pid, because the record is the one
+        // thing that can go missing while this process is still holding a VM.
+        // Then nothing knows the supervisor exists, and it stays resident with
+        // no sandbox to belong to.
+        try? Data("\(record.supervisorPID ?? 0)\n".utf8).write(
+            to: paths.socketDirectory(launch.name).appending(path: "supervisor.pid"),
+            options: .atomic)
+
         let socketPath = ControlClient.path(for: launch.name, paths: paths)
         let shutdown = ShutdownSignal()
 
