@@ -179,14 +179,26 @@ else
   out=$($B run docker.io/library/docker:28-dind --docker --no-tty \
     --allow '*.docker.io' --allow '*.docker.com' -- /bin/sh -c '
       docker version --format "server={{.Server.Version}}" 2>&1 | tail -1
+      # Registries are the flakiest thing this suite touches, and a pull that
+      # failed would produce neither marker below -- which reads exactly like
+      # a blocked request, i.e. a pass for the wrong reason.
+      for attempt in 1 2 3; do
+        docker pull -q docker.io/library/alpine:3.20 >/dev/null 2>&1 && break
+        sleep 3
+      done
       docker run --rm docker.io/library/alpine:3.20 sh -c \
-        "wget -T5 -q -O/dev/null http://example.com && echo NESTED_ESCAPED || echo NESTED_BLOCKED"' 2>&1)
+        "echo NESTED_RAN; wget -T5 -q -O/dev/null http://example.com \
+           && echo NESTED_ESCAPED || echo NESTED_BLOCKED"' 2>&1)
   # dockerd needs writable sysctls; without clearing readonlyPaths it dies at
   # "failed to set IP forwarding", which this catches.
   check "dockerd starts" "server=" "$out"
+  # Without this control, a nested container that never started would look
+  # identical to one that started and was correctly refused.
+  check "control: a nested container runs at all" "NESTED_RAN" "$out"
   # A container started inside the sandbox is behind the same interface, so it
   # inherits the same policy with nothing extra wired up.
   check "a nested container inherits the policy" "NESTED_BLOCKED" "$out"
+  check_absent "the nested container did not get out" "NESTED_ESCAPED" "$out"
 fi
 
 echo "== agents run unprivileged =="
