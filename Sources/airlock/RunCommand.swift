@@ -216,6 +216,16 @@ struct RunCommand: AsyncParsableCommand {
                 Data("airlock: no --allow rules; this sandbox reaches nothing\n".utf8))
         }
 
+        // Say so, rather than leaving the agent quietly without the guidance
+        // its kit wrote for it.
+        if let instructions = profile?.agentInstructions, !effectiveClone {
+            FileHandle.standardError.write(
+                Data(
+                    ("airlock: not writing \(instructions.filename); it would add a file "
+                        + "to your working tree. Use --clone to give the agent its own.\n")
+                        .utf8))
+        }
+
         // A template is a filesystem someone configured by hand, so it wins
         // over the agent's reproducible cached environment.
         var preparedRootfs: String?
@@ -271,6 +281,7 @@ struct RunCommand: AsyncParsableCommand {
         launch.environment = profile?.environment ?? [:]
         launch.files = profile?.files ?? []
         launch.startup = profile?.startup ?? []
+        launch.agentInstructions = profile?.agentInstructions
         // An agent with no explicit workspace should see the directory the
         // user is standing in — that is what they mean by running it here.
         if let workspace {

@@ -70,7 +70,7 @@ same IP.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 67 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 74 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -103,6 +103,8 @@ default for being awkward.
 | Agent with MCP servers and an unprivileged user | the config reaches the agent's own home |
 | Kit-declared file containing `$HOME` and a backtick | written verbatim at the declared mode |
 | Kit-declared `background: true` command | daemon still serving when the agent runs |
+| Kit `agentInstructions`, no `--clone` | withheld, and said so; your tree gains no file |
+| The same kit with `--clone` | delivered into the agent's own tree |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -342,18 +344,20 @@ deny rule would be a weaker sandbox than the one they wrote.
 
 Measured against all 41 kits in `docker/sbx-kits-contrib`: **21 sandbox kits
 translate and all 20 mixins compose onto one**, with no parse errors. Across
-that corpus, 16 declarations are reported as unhonoured, all of one of two
-kinds:
-
-| Not carried across | Kits | Why |
-|---|---|---|
-| `agentInstructions` | 12 | Delivering it means writing into the working tree, which airlock will not do to your files |
-| OAuth credential flows | 4 | airlock reuses a sign-in already on the host but does not perform the flow itself |
+that corpus **4 declarations are reported as unhonoured**, and all four are the
+same thing: an OAuth flow. airlock reuses a sign-in already on the host but
+does not perform the flow itself.
 
 Everything else translates: `permissions.network`, `credentials` with a
 binding, `environment`, `setup.install`, `setup.files` (written at the declared
-mode), and `setup.startup` — including `background: true` commands, which are
-started and left running rather than waited for.
+mode), `setup.startup` — including `background: true` commands, which are
+started and left running rather than waited for — and `agentInstructions`.
+
+`agentInstructions` is delivered **only under `--clone`**, and airlock says so
+when it withholds it. An agent reads its instructions from the working
+directory, which by default is a live share of your own tree: writing there
+would be a kit adding a file to your repository. `--clone` gives the agent a
+tree of its own, and that one is fair game.
 
 Composition follows the same rules as `sbx`: allow rules union (a mixin can
 only widen egress, never narrow it), install and startup concatenate with the
@@ -469,8 +473,8 @@ file, templates and snapshots, Docker kit import and mixin composition,
 interactive terminals, `policy log`, `top`, `doctor`, `kernel install`,
 provisioned files and startup commands (including background daemons).
 
-**Not yet:** dynamic filesystem approval (`VZHotplugProvider`), kit
-`agentInstructions`, host-side MCP gateway parity with sbx (a deliberate
+**Not yet:** dynamic filesystem approval (`VZHotplugProvider`),
+host-side MCP gateway parity with sbx (a deliberate
 divergence — see above), OAuth flows beyond a host sign-in already present
 (airlock reuses one but does not perform the sign-in itself), kit `extends`
 chains, a TUI, x86 emulation.

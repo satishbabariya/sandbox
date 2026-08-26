@@ -486,6 +486,36 @@ check "a detached sandbox's stdout is kept" "ON_STDOUT" "$out"
 check "and its stderr with it" "ON_STDERR" "$out"
 $B rm logcase --force >/dev/null 2>&1
 
+echo "== kit instructions reach a clone, never your tree =="
+
+rm -f "$AGENTS_DIR/acceptinstr.json"
+cat >"$AGENTS_DIR/acceptinstr.json" <<'PROFILE'
+{"name":"acceptinstr","displayName":"instructions acceptance",
+ "image":"docker.io/library/debian:bookworm-slim",
+ "agentInstructions":{"filename":"AGENTS.md","content":"KIT_GUIDANCE_DELIVERED\n"},
+ "command":["/bin/sh","-c","echo pwd=$(pwd); cat AGENTS.md 2>&1"]}
+PROFILE
+check "control: the instructions profile is registered" "acceptinstr" "$($B agents ls 2>&1)"
+
+INSTR_DIR=$(mktemp -d)
+echo original >"$INSTR_DIR/kept.txt"
+
+# Default workspace is a live share of the user's tree: a kit must not add a
+# file to it, and must say why the agent did not get its guidance.
+out=$(cd "$INSTR_DIR" && $B run acceptinstr --no-tty 2>&1)
+check_absent "nothing is written into your own working tree" "KIT_GUIDANCE_DELIVERED" "$out"
+check "and airlock says why not" "Use --clone" "$out"
+check_absent "your tree gains no file" "AGENTS.md" "$(ls -a "$INSTR_DIR" 2>&1)"
+
+# A clone is the agent's own tree, so the guidance belongs there.
+out=$(cd "$INSTR_DIR" && $B run acceptinstr --no-tty --clone 2>&1)
+check "a cloned workspace receives the guidance" "KIT_GUIDANCE_DELIVERED" "$out"
+check_absent "and your tree still gains no file" "AGENTS.md" "$(ls -a "$INSTR_DIR" 2>&1)"
+check "your own files are untouched" "original" "$(cat "$INSTR_DIR/kept.txt" 2>&1)"
+
+rm -rf "$INSTR_DIR"
+rm -f "$AGENTS_DIR/acceptinstr.json"
+
 echo "== a real agent, end to end =="
 
 # Opt-in: this one spends API tokens and needs a Claude Code sign-in already on

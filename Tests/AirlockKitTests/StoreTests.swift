@@ -756,14 +756,53 @@ struct KitCompositionTests {
         #expect(result.notes.contains { $0.contains("requires.agent") })
     }
 
+    @Test("a sandbox kit's instructions are carried across, not dropped")
+    func instructionsAreTranslated() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            agentInstructions:
+              filename: CLAUDE.md
+              content: be careful
+            """)
+        let result = try KitTranslator.translate(parsed)
+
+        #expect(result.profile.agentInstructions?.filename == "CLAUDE.md")
+        #expect(result.profile.agentInstructions?.content == "be careful")
+        // Carried, but conditional -- so the condition has to be stated.
+        #expect(result.notes.contains { $0.contains("--clone") })
+    }
+
+    @Test("instructions with no filename get the conventional one")
+    func instructionsDefaultFilename() throws {
+        let parsed = try spec(
+            """
+            name: demo
+            kind: sandbox
+            sandbox:
+              image: alpine
+            agentInstructions:
+              content: guidance
+            """)
+        let result = try KitTranslator.translate(parsed)
+        #expect(result.profile.agentInstructions?.filename == "AGENTS.md")
+    }
+
     @Test("mixin warnings name which mixin they came from")
     func warningsAreAttributed() throws {
+        // A file entry with no inline content refers to the kit's own files/
+        // tree, which airlock does not fetch -- one of the things still
+        // reported rather than honoured.
         let noisy = try spec(
             """
             name: noisy
             kind: mixin
-            agentInstructions:
-              content: guidance
+            setup:
+              files:
+                - path: /etc/thing.conf
             """)
         let result = try KitComposer.compose(base: try base, mixins: [noisy])
         #expect(result.unsupported.contains { $0.hasPrefix("[noisy]") })

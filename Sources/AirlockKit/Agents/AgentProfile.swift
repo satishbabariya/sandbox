@@ -24,6 +24,34 @@ public struct GuestFile: Codable, Sendable, Equatable {
     }
 }
 
+/// Guidance a kit wants the agent to read before it starts work.
+///
+/// Delivered only when the workspace is a clone. An agent reads this from its
+/// working directory, which by default is a live share of the user's own tree
+/// -- writing it there would mean a kit dropping a file into their repository.
+/// `--clone` gives the agent a tree of its own, and that one is fair game.
+public struct AgentInstructions: Codable, Sendable, Equatable {
+    /// Conventional default; kits that target a specific agent override it.
+    public static let defaultFilename = "AGENTS.md"
+
+    public var filename: String
+    public var content: String
+
+    public init(filename: String? = nil, content: String) {
+        self.filename = filename.flatMap { $0.isEmpty ? nil : $0 } ?? Self.defaultFilename
+        self.content = content
+    }
+
+    private enum CodingKeys: String, CodingKey { case filename, content }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            filename: try c.decodeIfPresent(String.self, forKey: .filename),
+            content: try c.decode(String.self, forKey: .content))
+    }
+}
+
 /// A command run as root at every sandbox start.
 ///
 /// Decodes either as a bare argv array or as an object with `background`, so a
@@ -104,6 +132,9 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     /// Each entry is an argv, so nothing is re-parsed by a shell it did not
     /// come from.
     public var startup: [StartupCommand]
+    /// Guidance written into the agent's working directory, when that
+    /// directory is a clone rather than the user's own tree.
+    public var agentInstructions: AgentInstructions?
 
     public init(
         name: String,
@@ -120,7 +151,8 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         mcpConfigPath: String? = nil,
         runAsUser: String? = nil,
         files: [GuestFile] = [],
-        startup: [StartupCommand] = []
+        startup: [StartupCommand] = [],
+        agentInstructions: AgentInstructions? = nil
     ) {
         self.name = name
         self.displayName = displayName
@@ -137,6 +169,7 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         self.runAsUser = runAsUser
         self.files = files
         self.startup = startup
+        self.agentInstructions = agentInstructions
     }
 
     /// Decoded field by field with defaults rather than by the synthesised
@@ -162,6 +195,8 @@ public struct AgentProfile: Codable, Sendable, Equatable {
         runAsUser = try c.decodeIfPresent(String.self, forKey: .runAsUser)
         files = try c.decodeIfPresent([GuestFile].self, forKey: .files) ?? []
         startup = try c.decodeIfPresent([StartupCommand].self, forKey: .startup) ?? []
+        agentInstructions = try c.decodeIfPresent(
+            AgentInstructions.self, forKey: .agentInstructions)
     }
 
     /// Everything the sandbox must be able to reach: the agent's own rules plus

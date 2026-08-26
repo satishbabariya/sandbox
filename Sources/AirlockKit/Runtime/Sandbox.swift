@@ -50,6 +50,9 @@ public struct SandboxSpec: Sendable {
     /// Commands run as root at every start, after the files are written and
     /// before privilege is dropped.
     public var startup: [StartupCommand]
+    /// Guidance written into the workspace, honoured only when the workspace
+    /// is a clone.
+    public var agentInstructions: AgentInstructions?
     /// Use this prepared ext4 image as the rootfs instead of unpacking the
     /// image fresh. Set by the agent cache.
     public var preparedRootfs: URL?
@@ -96,6 +99,7 @@ public struct SandboxSpec: Sendable {
         runAsUser: String? = nil,
         files: [GuestFile] = [],
         startup: [StartupCommand] = [],
+        agentInstructions: AgentInstructions? = nil,
         preparedRootfs: URL? = nil,
         terminal: Bool = false,
         hostTerminal: Terminal? = nil,
@@ -123,6 +127,7 @@ public struct SandboxSpec: Sendable {
         self.runAsUser = runAsUser
         self.files = files
         self.startup = startup
+        self.agentInstructions = agentInstructions
         self.preparedRootfs = preparedRootfs
         self.terminal = terminal
         self.hostTerminal = hostTerminal
@@ -394,8 +399,21 @@ public actor Sandbox {
             // what kits assume when they write to /usr/local/bin or chown.
             config.process.arguments = Self.startupBootstrap(
                 wrapping: config.process.arguments, startup: spec.startup)
+            // Only into a clone. The default workspace is a live share of the
+            // user's own tree, and a kit dropping a file into their repository
+            // is not a thing a sandbox should do. The clone runs before this
+            // point, so the tree exists to write into.
+            var guestFiles = spec.files
+            if let instructions = spec.agentInstructions,
+                spec.workspace != nil, spec.cloneWorkspace
+            {
+                guestFiles.append(
+                    GuestFile(
+                        path: spec.workspaceDestination + "/" + instructions.filename,
+                        content: instructions.content))
+            }
             config.process.arguments = Self.filesBootstrap(
-                wrapping: config.process.arguments, files: spec.files)
+                wrapping: config.process.arguments, files: guestFiles)
 
             if let dockerDisk {
                 // dockerd turns this on itself, but only if /proc/sys is

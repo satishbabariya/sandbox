@@ -60,15 +60,12 @@ public enum KitComposer {
         translated.profile.image = ""
         translated.profile.command = []
 
-        // Deliberate, not missing. An agent reads its instructions from the
-        // working directory, which for airlock is a live share of the user's
-        // own tree -- delivering this would mean a kit dropping a file into
-        // their repository. `--clone` gives the agent a tree of its own; the
-        // guidance can be committed there.
-        if spec.agentInstructions?.content != nil {
-            translated.unsupported.append(
-                "agentInstructions: not written; it would place a file in your "
-                    + "working tree, which airlock does not do to your files")
+        if let content = spec.agentInstructions?.content {
+            translated.profile.agentInstructions = AgentInstructions(
+                filename: spec.agentInstructions?.filename, content: content)
+            translated.notes.append(
+                "agentInstructions is written only with --clone; into your own "
+                    + "working tree it would be a kit adding a file to your repository")
         }
         return translated
     }
@@ -121,6 +118,12 @@ public enum KitComposer {
             } else {
                 merged.files.append(file)
             }
+        }
+
+        // Later wins, as for environment: a mixin layered on top is the more
+        // specific statement about what the agent should be told.
+        if let instructions = layer.agentInstructions {
+            merged.agentInstructions = instructions
         }
 
         // Privilege is a union: if any layer needs it, the sandbox needs it.

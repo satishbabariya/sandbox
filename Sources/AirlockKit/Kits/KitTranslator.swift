@@ -124,6 +124,18 @@ public enum KitTranslator {
             notes.append("ports are not published automatically; use -p")
         }
 
+        // Handled here as well as in the mixin path: a sandbox kit's own
+        // instructions were being dropped without even a note, which is the
+        // one outcome the translator is supposed to make impossible.
+        var instructions: AgentInstructions?
+        if let content = spec.agentInstructions?.content {
+            instructions = AgentInstructions(
+                filename: spec.agentInstructions?.filename, content: content)
+            notes.append(
+                "agentInstructions is written only with --clone; into your own "
+                    + "working tree it would be a kit adding a file to your repository")
+        }
+
         let profile = AgentProfile(
             name: spec.name,
             displayName: spec.displayName ?? spec.name,
@@ -135,7 +147,8 @@ public enum KitTranslator {
             environment: spec.environment?.variables ?? [:],
             docker: spec.security?.privileged ?? false,
             files: files,
-            startup: startup
+            startup: startup,
+            agentInstructions: instructions
         )
 
         return KitTranslation(profile: profile, notes: notes, unsupported: unsupported)
