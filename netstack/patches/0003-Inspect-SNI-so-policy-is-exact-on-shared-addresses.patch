@@ -1,7 +1,7 @@
 From da24ab919a5e5659b61e454bc3a95adf59fe9ba7 Mon Sep 17 00:00:00 2001
 From: Satish Babariya <themadengineer99@gmail.com>
 Date: Wed, 26 Aug 2026 10:11:32 +0530
-Subject: [PATCH 3/3] Inspect SNI so policy is exact on shared addresses
+Subject: [PATCH 3/4] Inspect SNI so policy is exact on shared addresses
 
 The resolution ledger says which names an address was handed out for. That is
 enough to refuse an address we never vouched for, but not enough to be precise

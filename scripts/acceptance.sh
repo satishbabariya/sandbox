@@ -165,6 +165,20 @@ check "config deny cannot be flagged away" "BLOCKED" "$out"
 "$B" config unset deny >/dev/null 2>&1
 if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 
+echo "== host files are not writable through a copy mount =="
+
+# An agent rewrites its own config. Binding the host's real one read-write let
+# a sandboxed agent truncate it — which happened, and is exactly the host
+# damage a sandbox exists to prevent. Copy mounts give the guest its own.
+STAGE=$(mktemp -d)
+echo "host-original" >"$STAGE/config.json"
+BEFORE=$(shasum -a 256 "$STAGE/config.json" | cut -d" " -f1)
+"$B" run "$CLONE_IMAGE" --no-tty --mount "$STAGE/config.json:/tmp/cfg.json:copy" -- \
+  /bin/sh -c 'echo guest-overwrote >/tmp/cfg.json; cat /tmp/cfg.json' >/tmp/airlock-copy.log 2>&1
+check "guest can write its copy" "guest-overwrote" "$(cat /tmp/airlock-copy.log)"
+check "host file is untouched" "^$BEFORE$" "$(shasum -a 256 "$STAGE/config.json" | cut -d' ' -f1)"
+rm -rf "$STAGE" /tmp/airlock-copy.log
+
 echo "== sandbox isolation =="
 
 # Every sandbox gets the same private subnet, so the question is whether two of

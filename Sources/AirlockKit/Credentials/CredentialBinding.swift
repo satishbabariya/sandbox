@@ -14,12 +14,23 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
     public var header: String
     /// How to render the value. `{}` is replaced with the secret.
     public var format: String
+    /// Headers to strip before injecting.
+    ///
+    /// An agent may authenticate differently from the credential backing it:
+    /// one signed in with OAuth still sends an API-key header when the
+    /// corresponding environment variable is set. Leaving that header in place
+    /// sends the sentinel alongside the real token and the server rejects it.
+    public var replaceHeaders: [String]
 
-    public init(service: String, domain: String, header: String, format: String = "{}") {
+    public init(
+        service: String, domain: String, header: String, format: String = "{}",
+        replaceHeaders: [String] = []
+    ) {
         self.service = service
         self.domain = domain
         self.header = header
         self.format = format
+        self.replaceHeaders = replaceHeaders
     }
 
     /// What the guest is given in place of the real value.
@@ -43,7 +54,11 @@ public struct CredentialBinding: Codable, Sendable, Equatable {
         // Reuses an OAuth sign-in already on the host rather than a stored key.
         "claude": CredentialBinding(
             service: "claude", domain: "api.anthropic.com",
-            header: "authorization", format: "Bearer {}"),
+            header: "authorization", format: "Bearer {}",
+            // Claude Code sends x-api-key when ANTHROPIC_API_KEY is set, which
+            // it is, to the sentinel. Both headers reaching the server means
+            // the sentinel is judged alongside the real token.
+            replaceHeaders: ["x-api-key"]),
     ]
 
     /// The environment variable an agent expects, set to the sentinel so tools
@@ -70,11 +85,14 @@ public struct ResolvedCredential: Codable, Sendable, Equatable {
     public var header: String
     /// Already formatted, e.g. "Bearer sk-...".
     public var value: String
+    /// Headers the gateway strips before injecting.
+    public var replace: [String]
 
-    public init(domain: String, header: String, value: String) {
+    public init(domain: String, header: String, value: String, replace: [String] = []) {
         self.domain = domain
         self.header = header
         self.value = value
+        self.replace = replace
     }
 }
 
@@ -125,7 +143,8 @@ public struct BrokerConfiguration: Codable, Sendable, Equatable {
                 ResolvedCredential(
                     domain: binding.domain,
                     header: binding.header,
-                    value: binding.format.replacingOccurrences(of: "{}", with: secret)
+                    value: binding.format.replacingOccurrences(of: "{}", with: secret),
+                    replace: binding.replaceHeaders
                 ))
         }
         // Several bindings can cover the same domain — an API key and an OAuth

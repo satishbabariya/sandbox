@@ -87,6 +87,8 @@ Against live VMs on `alpine:3.20`:
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 | **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
+| Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
+| **Claude Code running a real task** | completes, with the OAuth token absent from the guest |
 
 The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
@@ -346,6 +348,20 @@ cannot be weakened by a flag.** An operator can pin a block for every sandbox
 on the machine and rely on it. A config file that will not parse is an error,
 never a silent fallback — quietly ignoring it could drop a deny rule the user
 believes is in force.
+
+## Mounts that agents write to
+
+An agent rewrites its own configuration. A profile mount marked `:copy` gives
+the guest a private duplicate rather than the host's file:
+
+```console
+$ airlock run claude --mount ~/.myconfig:/root/.myconfig:copy
+```
+
+This is not a convenience. Binding an agent's real config read-write let a
+sandboxed Claude Code truncate `~/.claude.json` on the host during development
+— exactly the damage a sandbox exists to prevent. All built-in agent profiles
+now use `:copy` for their config.
 
 ## Protecting your working tree
 

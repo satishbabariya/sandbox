@@ -21,6 +21,12 @@ public struct AgentProfile: Codable, Sendable, Equatable {
     public var secrets: [String]
     /// Host paths mounted into the guest, as "host:guest" or "host:guest:ro".
     /// Tilde is expanded.
+    ///
+    /// Use `:copy` for anything the agent writes to. An agent's own config is
+    /// the obvious case: mounting it read-write lets a sandboxed agent rewrite
+    /// the user's real configuration, which is precisely the kind of host
+    /// damage a sandbox exists to prevent. A copy gives the guest a private
+    /// one that is discarded with the sandbox.
     public var mounts: [String]
     public var environment: [String: String]
     /// Give this agent its own dockerd.
@@ -104,7 +110,11 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "statsig.anthropic.com", "sentry.io"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic", "claude"],
-            mounts: ["~/.claude:/root/.claude"],
+            // Both are copies, not binds: Claude Code rewrites its config, and
+            // a bind would let a sandboxed agent corrupt the user's real one.
+            // It reads .claude.json as a file beside the directory, not inside
+            // it, and refuses to start without it.
+            mounts: ["~/.claude:/root/.claude:copy", "~/.claude.json:/root/.claude.json:copy"],
             mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
@@ -120,7 +130,7 @@ extension AgentProfile {
             allow: ["api.openai.com", "chatgpt.com", "auth.openai.com"]
                 + commonToolingEgress + gitEgress,
             secrets: ["openai"],
-            mounts: ["~/.codex:/root/.codex"],
+            mounts: ["~/.codex:/root/.codex:copy"],
             mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
@@ -139,7 +149,7 @@ extension AgentProfile {
                 "accounts.google.com",
             ] + commonToolingEgress + gitEgress,
             secrets: ["gemini"],
-            mounts: ["~/.gemini:/root/.gemini"],
+            mounts: ["~/.gemini:/root/.gemini:copy"],
             mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
@@ -155,7 +165,7 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "api.openai.com", "openrouter.ai"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic"],
-            mounts: ["~/.config/opencode:/root/.config/opencode"],
+            mounts: ["~/.config/opencode:/root/.config/opencode:copy"],
             mcpConfigPath: "/root/.mcp.json"
         ),
         AgentProfile(
@@ -258,17 +268,26 @@ public struct AgentRegistry: Sendable {
     }
 }
 
-/// One `host:guest[:ro]` mount.
+/// One `host:guest[:ro|:copy]` mount.
 public struct MountSpec: Sendable, Equatable {
     public var source: URL
     public var destination: String
     public var readOnly: Bool
+    /// Give the guest a private copy rather than the host's own files.
+    public var copy: Bool
 
     /// Parse a mount argument, expanding `~`.
     ///
     /// Returns nil when the host path does not exist — an agent profile may
     /// reference a config directory the user has never created, and that should
     /// not stop the sandbox from starting.
+    public init(source: URL, destination: String, readOnly: Bool, copy: Bool = false) {
+        self.source = source
+        self.destination = destination
+        self.readOnly = readOnly
+        self.copy = copy
+    }
+
     public static func parse(_ raw: String) -> MountSpec? {
         let parts = raw.split(separator: ":", maxSplits: 2).map(String.init)
         guard parts.count >= 2 else { return nil }
@@ -282,10 +301,12 @@ public struct MountSpec: Sendable, Equatable {
         let url = URL(filePath: host).standardizedFileURL
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
+        let mode = parts.count > 2 ? parts[2] : ""
         return MountSpec(
             source: url,
             destination: parts[1],
-            readOnly: parts.count > 2 && parts[2] == "ro"
+            readOnly: mode == "ro",
+            copy: mode == "copy"
         )
     }
 }

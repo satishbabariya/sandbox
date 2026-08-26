@@ -236,6 +236,28 @@ public actor Sandbox {
             dockerDisk = disk
         }
 
+        // Stage copies before configuring, so a mount marked `copy` shares a
+        // duplicate the guest may rewrite without reaching the host's own.
+        var stagedMounts: [String: URL] = [:]
+        let stagingRoot = runtimeDir.appending(path: "mounts")
+        for mount in spec.mounts where mount.copy {
+            let staged = stagingRoot.appending(
+                path: mount.destination
+                    .replacingOccurrences(of: "/", with: "_")
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "_")))
+            try? FileManager.default.removeItem(at: staged)
+            try FileManager.default.createDirectory(
+                at: stagingRoot, withIntermediateDirectories: true)
+            do {
+                try FileManager.default.copyItem(at: mount.source, to: staged)
+                stagedMounts[mount.destination] = staged
+            } catch {
+                // A missing source is normal — the user may never have run the
+                // agent on this host. Starting without it beats refusing.
+                logger?.info("could not stage \(mount.source.path): \(error)")
+            }
+        }
+
         let caCertificate = supervisor.caCertificatePath
         let caIsPresent = FileManager.default.fileExists(atPath: caCertificate.path)
         let guestShare = supervisor.guestShareDirectory
@@ -373,9 +395,15 @@ public actor Sandbox {
             }
 
             for mount in spec.mounts {
+                // A copy mount shares a staged duplicate, so the guest can
+                // write freely and the host's originals are untouchable.
+                let source =
+                    mount.copy
+                    ? (stagedMounts[mount.destination] ?? mount.source)
+                    : mount.source
                 config.mounts.append(
                     .share(
-                        source: mount.source.path(percentEncoded: false),
+                        source: source.path(percentEncoded: false),
                         destination: mount.destination,
                         options: mount.readOnly ? ["ro"] : []
                     ))
