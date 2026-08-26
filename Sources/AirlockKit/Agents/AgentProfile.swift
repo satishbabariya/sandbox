@@ -190,7 +190,8 @@ extension AgentProfile {
                     + "git curl ca-certificates ripgrep less vim sudo python3"
             ],
             command: ["/bin/bash"],
-            allow: commonToolingEgress + gitEgress
+            allow: commonToolingEgress + gitEgress,
+            runAsUser: "agent"
         ),
     ]
 }

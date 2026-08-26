@@ -189,7 +189,9 @@ echo "== agents run unprivileged =="
 # Claude Code refuses --dangerously-skip-permissions as root, so an agent
 # profile that ran as root could not work at all. Running unprivileged is also
 # the right posture: an agent has no business being root inside its own VM.
-out=$($B run claude --no-tty -- /bin/sh -c 'echo "uid=$(id -u)"; sudo -n true 2>/dev/null && echo sudo-ok' 2>&1)
+# Uses the shell agent rather than a large one: a changed install step would
+# otherwise rebuild a multi-minute environment in the middle of the suite.
+out=$($B run "$CLONE_IMAGE" --no-tty -- /bin/sh -c 'echo "uid=$(id -u)"; sudo -n true 2>/dev/null && echo sudo-ok' 2>&1)
 check "agent is not root" "uid=1000" "$out"
 # But it must still be able to install things, which is a normal agent action.
 check "agent can still escalate inside its own VM" "sudo-ok" "$out"
