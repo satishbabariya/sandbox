@@ -345,6 +345,15 @@ struct PruneCommand: AsyncParsableCommand {
             print("removed \(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
             removed += orphans.count
         }
+        // Anything whose directory was already gone before this ran, and so
+        // could never have been found through a pid file.
+        for stray in StrayProcess.all() where ProcessLiveness.isAlive(stray.pid) {
+            if kill(stray.pid, SIGTERM) == 0 {
+                print("stopped stray \(stray.kind) (\(stray.directory))")
+                removed += 1
+            }
+        }
+
         if supervisors > 0 {
             print(
                 "stopped \(supervisors) orphaned supervisor\(supervisors == 1 ? "" : "s")")

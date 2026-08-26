@@ -573,6 +573,24 @@ check "and the VM is not still resident" "yes" \
 check "and the gateway is gone" "yes" \
   "$([ "$(count_gateways)" -le "$BASE_GW" ] && echo yes || echo no)"
 
+# The harder case: the directory holding both pid files is removed while the
+# processes still run, so nothing recorded anywhere can name them. They are
+# found by what they say about themselves on their own command line.
+$B rm straycase --force >/dev/null 2>&1
+$B run "$IMAGE" --name straycase --detach --no-tty -- /bin/sh -c 'sleep 120' >/dev/null 2>&1
+for _ in 1 2 3 4 5 6; do
+  [ "$(count_supervisors)" -gt "$BASE_SUP" ] && break
+  sleep 1
+done
+rm -f "$HOME/.airlock/sandboxes/straycase.json"
+rm -rf /tmp/airlock-straycase
+check "doctor reports a process still holding a VM" "holding a VM" "$($B doctor 2>&1)"
+out=$($B prune 2>&1)
+check "prune finds a process whose directory is gone" "stray supervisor" "$out"
+sleep 2
+check "and stops it" "yes" \
+  "$([ "$(count_supervisors)" -le "$BASE_SUP" ] && echo yes || echo no)"
+
 echo "== a kit is imported and run =="
 
 # Translating a kit and running one are different things: three bugs that made

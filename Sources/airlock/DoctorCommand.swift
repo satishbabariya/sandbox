@@ -71,10 +71,26 @@ struct DoctorCommand: AsyncParsableCommand {
     private func checkOrphans(_ paths: AirlockPaths) -> Status {
         let orphans = PruneCommand.orphanedRuntimeDirectories(
             store: SandboxStore(paths: paths))
-        guard !orphans.isEmpty else { return .ok("none") }
-        return .warn(
-            "\(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies") in /tmp",
-            fix: "airlock prune")
+        // A directory is untidy; a process is a VM still holding memory, so it
+        // is worth naming separately even though one command clears both.
+        let strays = StrayProcess.all()
+
+        if orphans.isEmpty, strays.isEmpty { return .ok("none") }
+
+        var parts: [String] = []
+        if !orphans.isEmpty {
+            parts.append(
+                "\(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
+        }
+        if !strays.isEmpty {
+            let vms = strays.filter { $0.kind == .supervisor }.count
+            parts.append(
+                vms > 0
+                    ? "\(strays.count) stray process\(strays.count == 1 ? "" : "es") "
+                        + "(\(vms) still holding a VM)"
+                    : "\(strays.count) stray process\(strays.count == 1 ? "" : "es")")
+        }
+        return .warn(parts.joined(separator: ", "), fix: "airlock prune")
     }
 
     private func checkArchitecture() -> Status {
