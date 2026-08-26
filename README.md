@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 108 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 110 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -107,6 +107,7 @@ default for being awkward.
 | A resolver the guest picked itself (`nslookup … 8.8.8.8`) | unreachable |
 | IPv6 | no global address and no route; nothing to police |
 | **Guest POSTs to the gateway's forwarder API** | refused; no host port appears, while `-p` still publishes on loopback |
+| DNS over TCP for a denied name | `REFUSED`, while an allowed name resolves |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
 | **Claude Code running a real task** | completes, with the OAuth token absent from the guest |

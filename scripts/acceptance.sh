@@ -125,6 +125,36 @@ out=$($B run "$IMAGE" --no-tty -- /bin/sh -c '
   wget -T5 -q -O/dev/null "http://[2606:4700:4700::1111]/" 2>&1 >/dev/null && echo V6_TCP_ESCAPED || echo V6_TCP_BLOCKED' 2>&1)
 check_absent "there is no IPv6 way out" "ESCAPED" "$out"
 
+echo "== DNS over TCP is policed like DNS over UDP =="
+
+# The resolver answers on TCP as well as UDP, and a gate applied to only one of
+# them would be no gate at all. Asked with a real DNS/TCP client rather than
+# nslookup -vc, whose output does not distinguish a refusal from a failure.
+out=$($B run docker.io/library/python:3.12-alpine --no-tty --allow example.com -- python3 -c '
+import socket, struct
+
+def query(name):
+    q = b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00"
+    msg = struct.pack(">HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + q + struct.pack(">HH", 1, 1)
+    s = socket.create_connection(("192.168.127.1", 53), timeout=8)
+    s.sendall(struct.pack(">H", len(msg)) + msg)
+    n = struct.unpack(">H", s.recv(2))[0]
+    resp = s.recv(n)
+    s.close()
+    return resp[3] & 0x0F, struct.unpack(">H", resp[6:8])[0]
+
+for name in ["example.com", "evil.example.org"]:
+    try:
+        rcode, answers = query(name)
+        print(f"{name} rcode={rcode} answers={answers}")
+    except Exception as e:
+        print(f"{name} failed {e}")
+' 2>&1)
+# rcode 5 is REFUSED, which is what the gate returns; 0 with answers is a
+# genuine resolution.
+check "control: an allowed name resolves over TCP" "example.com rcode=0 answers=[1-9]" "$out"
+check "a denied name is refused over TCP too" "evil.example.org rcode=5 answers=0" "$out"
+
 echo "== the guest cannot publish itself to the host =="
 
 # Upstream serves its port-forwarding control API inside the virtual network,
