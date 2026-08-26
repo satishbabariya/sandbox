@@ -12,7 +12,8 @@ struct SecretCommand: AsyncParsableCommand {
             the real value is substituted on the host, per request, only for the \
             domain the credential is bound to.
             """,
-        subcommands: [SecretSet.self, SecretList.self, SecretRemove.self]
+        subcommands: [SecretSet.self, SecretList.self, SecretRemove.self],
+        defaultSubcommand: SecretList.self
     )
 }
 

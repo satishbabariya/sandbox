@@ -61,7 +61,8 @@ struct TemplatesCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "templates",
         abstract: "List and remove saved templates.",
-        subcommands: [TemplatesList.self, TemplatesRemove.self]
+        subcommands: [TemplatesList.self, TemplatesRemove.self],
+        defaultSubcommand: TemplatesList.self
     )
 }
 

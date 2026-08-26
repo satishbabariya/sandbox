@@ -12,7 +12,8 @@ struct AgentsCommand: AsyncParsableCommand {
             any of them. Drop JSON in ~/.airlock/agents to add your own or \
             override a built-in of the same name.
             """,
-        subcommands: [AgentsList.self, AgentsShow.self, AgentsEdit.self, AgentsCache.self]
+        subcommands: [AgentsList.self, AgentsShow.self, AgentsEdit.self, AgentsCache.self],
+        defaultSubcommand: AgentsList.self
     )
 }
 
