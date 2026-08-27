@@ -1,5 +1,5 @@
 From fe350060fec1a05dd20909da20d41be9bb94c504 Mon Sep 17 00:00:00 2001
-From: t <t@t>
+From: Satish Babariya <themadengineer99@gmail.com>
 Date: Wed, 26 Aug 2026 13:06:37 +0530
 Subject: [PATCH 5/5] Record DNS refusals in the audit log
 
