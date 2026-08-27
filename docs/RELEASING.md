@@ -61,7 +61,15 @@ Then `brew install satishbabariya/tap/sandbox` works.
 ## After
 
 Check the published archive the way a user would, rather than trusting the
-workflow said so:
+workflow said so. Download both files and verify the checksum first — that is
+what a careful user does, and it is the step most likely to be quietly broken:
+
+```console
+$ gh release download v0.1.0
+$ shasum -a 256 -c sandbox-v0.1.0-darwin-arm64.tar.gz.sha256
+```
+
+Then run it:
 
 ```console
 $ tar -xzf sandbox-v0.1.0-darwin-arm64.tar.gz

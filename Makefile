@@ -91,7 +91,10 @@ package:
 	@cp $(GATEWAY) dist/$(STAGE)/bin/
 	@cp README.md LICENSE SECURITY.md dist/$(STAGE)/
 	@tar -czf dist/$(STAGE).tar.gz -C dist $(STAGE)
-	@shasum -a 256 dist/$(STAGE).tar.gz | tee dist/$(STAGE).tar.gz.sha256
+	# Recorded from inside dist/, so the file names the archive rather than the
+	# path it happened to be built at. `shasum -c` looks for the name it is
+	# given, and "dist/..." is not where a user who downloaded both has it.
+	@cd dist && shasum -a 256 $(STAGE).tar.gz | tee $(STAGE).tar.gz.sha256
 	@$(MAKE) verify-package
 
 # Check the archive, not the build tree. codesign travels in an extended
