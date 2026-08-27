@@ -110,6 +110,7 @@ default for being awkward.
 | DNS over TCP for a denied name | `REFUSED`, while an allowed name resolves |
 | Runtime and state directories | `drwx------`; another account cannot read an agent's console log |
 | **TLS interception scope** | a bound domain verifies against airlock's CA; an unbound one does not, and the CA key never leaves the host |
+| Guest forging `Host:` on a brokered request | the request is addressed to the name whose certificate was verified, not the one the guest wrote |
 | Guest reading outside the share (`..`, absolute path, symlink) | all refused; the share is the only thing visible |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
 | Agent rewriting its own config through a `copy` mount | guest's copy changes; host file byte-identical |
@@ -168,6 +169,10 @@ Being wrong about this is worse than not shipping it.
   process has this property whatever the runtime; `--clone` avoids it by giving
   the agent a tree that is not yours.
 - **Side channels** — timing, or data encoded in DNS names within an allowed zone.
+- **Filling your disk from inside the sandbox** is bounded, not prevented. Every
+  refusal is an audit line, and the guest decides how many there are, so the log
+  is capped at 32 MiB with one generation kept. A sandbox's own writes to its
+  workspace and rootfs are not bounded.
 - **Filesystem access beyond directory granularity.** Virtualization.framework
   offers no per-file-operation hook, so airlock cannot express "allow
   `~/.ssh/config`, deny `~/.ssh/id_rsa`".
@@ -276,6 +281,11 @@ trust. That CA is used **only for the domains a credential is bound to**:
 asked to verify against airlock's CA alone, `api.anthropic.com` does and
 `example.com` does not — the guest sees the real chain for everything else.
 The private key stays on the host and is never shared into the sandbox.
+
+A brokered request is addressed to the name whose certificate the broker
+verified, not to whatever the guest put in its `Host:` header — otherwise a
+guest could put a real secret on a request addressed anywhere it liked, and a
+virtual-hosted endpoint may route by that name.
 
 
 ```console

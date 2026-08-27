@@ -1,0 +1,175 @@
+Bound the audit log a guest can make the host write
+
+Every refused connection is a line in the policy audit log, and the
+guest decides how many there are. A program retrying a blocked address
+in a loop -- or a compromised one doing it deliberately -- could fill
+the host's disk from inside the sandbox: measured at 305 bytes a
+refusal, with no cap and no rotation.
+
+One file is capped and one generation is kept, so a sandbox holds at
+most twice the limit however long a flood runs. Rotating rather than
+refusing to write: the log is read to find out why something was
+refused, and capping in place would freeze it at the moment the flood
+started and hide everything after it.
+
+diff --git a/pkg/policy/engine.go b/pkg/policy/engine.go
+index f1661d2..03d24f6 100644
+--- a/pkg/policy/engine.go
++++ b/pkg/policy/engine.go
+@@ -47,8 +47,10 @@ type Engine struct {
+ 	deny   []Pattern
+ 	ledger map[string]*ledgerEntry
+ 
+-	auditMu sync.Mutex
+-	audit   *os.File
++	auditMu    sync.Mutex
++	audit      *os.File
++	auditPath  string
++	auditBytes int64
+ 
+ 	now func() time.Time
+ }
+@@ -91,6 +93,10 @@ func NewEngine(allow, deny []string, auditPath string) (*Engine, error) {
+ 			return nil, fmt.Errorf("cannot open policy audit log: %w", err)
+ 		}
+ 		e.audit = f
++		e.auditPath = auditPath
++		if info, err := f.Stat(); err == nil {
++			e.auditBytes = info.Size()
++		}
+ 	}
+ 	return e, nil
+ }
+@@ -311,6 +317,44 @@ type auditRecord struct {
+ 	Names   []string `json:"names,omitempty"`
+ }
+ 
++// auditLimit is the size one audit file may reach before it is rotated, so a
++// sandbox holds at most twice this on disk.
++//
++// The guest decides how much gets written here: every refused connection is a
++// line, and a program retrying a blocked address in a loop -- or a compromised
++// one doing it deliberately -- would otherwise fill the host's disk from inside
++// the sandbox. 305 bytes a refusal means this still holds on the order of a
++// hundred thousand of them.
++const auditLimit = 32 << 20
++
++// rotateIfLargeLocked keeps the newest decisions and discards the oldest.
++//
++// Rotating rather than refusing to write: the log is read to find out why
++// something was refused, and under a flood the interesting entries are the
++// recent ones. Capping in place would freeze it at the moment the flood
++// started and hide everything after it.
++//
++// Callers must hold auditMu.
++func (e *Engine) rotateIfLargeLocked() {
++	if e.auditBytes < auditLimit || e.auditPath == "" {
++		return
++	}
++	_ = e.audit.Close()
++	// One generation back is kept, so a flood cannot cost more than twice the
++	// limit however long it runs.
++	_ = os.Rename(e.auditPath, e.auditPath+".prev")
++
++	f, err := os.OpenFile(e.auditPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
++	if err != nil {
++		// Nothing useful to do here: refusing to enforce policy because a log
++		// could not be reopened would be far worse than losing the log.
++		e.audit = nil
++		return
++	}
++	e.audit = f
++	e.auditBytes = 0
++}
++
+ func (e *Engine) record(proto string, ip net.IP, port uint16, v Verdict) {
+ 	e.auditMu.Lock()
+ 	defer e.auditMu.Unlock()
+@@ -332,6 +376,8 @@ func (e *Engine) record(proto string, ip net.IP, port uint16, v Verdict) {
+ 		Names:   v.Names,
+ 	}
+ 	if b, err := json.Marshal(rec); err == nil {
+-		_, _ = e.audit.Write(append(b, '\n'))
++		n, _ := e.audit.Write(append(b, '\n'))
++		e.auditBytes += int64(n)
++		e.rotateIfLargeLocked()
+ 	}
+ }
+diff --git a/pkg/policy/policy_test.go b/pkg/policy/policy_test.go
+index 8441275..5e8a2cb 100644
+--- a/pkg/policy/policy_test.go
++++ b/pkg/policy/policy_test.go
+@@ -235,3 +235,73 @@ func TestInvalidPatternRejectedAtConstruction(t *testing.T) {
+ 		t.Fatal("a malformed pattern must fail engine construction, not be ignored")
+ 	}
+ }
++
++// The guest decides how much gets written here: every refused connection is a
++// line. A program retrying a blocked address in a loop -- or a compromised one
++// doing it deliberately -- must not be able to fill the host's disk from inside
++// the sandbox.
++func TestAuditLogIsBounded(t *testing.T) {
++	dir := t.TempDir()
++	path := filepath.Join(dir, "policy.jsonl")
++
++	e, err := NewEngine([]string{}, []string{}, path)
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++	defer e.Close()
++
++	// Start just under the limit, so this writes a handful of lines rather
++	// than 32MB of them.
++	e.auditMu.Lock()
++	e.auditBytes = auditLimit - 1
++	e.auditMu.Unlock()
++
++	e.AllowDial("tcp", net.ParseIP("1.2.3.4"), 443)
++	e.AllowDial("tcp", net.ParseIP("1.2.3.5"), 443)
++
++	if _, err := os.Stat(path + ".prev"); err != nil {
++		t.Fatalf("expected the full log to be rotated aside: %v", err)
++	}
++	info, err := os.Stat(path)
++	if err != nil {
++		t.Fatalf("expected a fresh log: %v", err)
++	}
++	if info.Size() == 0 {
++		t.Error("the fresh log should hold the decisions made after rotating")
++	}
++	if info.Size() >= auditLimit {
++		t.Errorf("fresh log is %d bytes, which is not fresh", info.Size())
++	}
++}
++
++// Rotating keeps one generation, so a flood costs at most twice the limit
++// however long it runs.
++func TestAuditLogKeepsOnlyOneGenerationBack(t *testing.T) {
++	dir := t.TempDir()
++	path := filepath.Join(dir, "policy.jsonl")
++
++	e, err := NewEngine([]string{}, []string{}, path)
++	if err != nil {
++		t.Fatalf("NewEngine: %v", err)
++	}
++	defer e.Close()
++
++	for round := 0; round < 3; round++ {
++		e.auditMu.Lock()
++		e.auditBytes = auditLimit - 1
++		e.auditMu.Unlock()
++		e.AllowDial("tcp", net.ParseIP("1.2.3.4"), 443)
++	}
++
++	entries, err := os.ReadDir(dir)
++	if err != nil {
++		t.Fatalf("ReadDir: %v", err)
++	}
++	if len(entries) != 2 {
++		names := []string{}
++		for _, entry := range entries {
++			names = append(names, entry.Name())
++		}
++		t.Errorf("expected the log and one generation back, got %v", names)
++	}
++}

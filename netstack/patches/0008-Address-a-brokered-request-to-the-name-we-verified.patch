@@ -1,0 +1,119 @@
+Address a brokered request to the name we verified
+
+The broker chooses the credential from the SNI name and verifies the
+upstream certificate against it, but left the Host header as the guest
+wrote it. Go's Request.Write prefers req.Host over req.URL.Host, so a
+guest could put a real secret on a request addressed anywhere it liked.
+
+The credential still only reached the host whose certificate was
+verified -- the connection is pinned to it -- but a virtual-hosted
+endpoint may route by Host, which could send an authenticated request
+to a tenant the credential does not belong to. There is no reason to
+leave the guest that latitude on a request carrying a secret it cannot
+see.
+
+The test asserts the upstream never sees a Host the guest chose. It
+fails on the previous behaviour with the forged name in the message.
+
+diff --git a/pkg/broker/broker.go b/pkg/broker/broker.go
+index 0ac19bf..4997a8b 100644
+--- a/pkg/broker/broker.go
++++ b/pkg/broker/broker.go
+@@ -172,6 +172,12 @@ func (b *Broker) handleWithRoots(
+ 		req.Header.Set(cred.Header, cred.Value)
+ 		req.URL.Scheme = "https"
+ 		req.URL.Host = name
++		// Addressed to the name we verified and chose the credential for, not
++		// to whatever the guest wrote. Write() prefers req.Host over the URL,
++		// so leaving it alone let the guest put a real secret on a request
++		// addressed anywhere it liked -- which a virtual-hosted endpoint may
++		// route somewhere other than the tenant the credential belongs to.
++		req.Host = name
+ 		// http.ReadRequest gives a server-side request; Write needs a
+ 		// client-side one.
+ 		req.RequestURI = ""
+diff --git a/pkg/broker/broker_test.go b/pkg/broker/broker_test.go
+index 781c86f..33a20e1 100644
+--- a/pkg/broker/broker_test.go
++++ b/pkg/broker/broker_test.go
+@@ -236,3 +236,80 @@ func TestReplacedHeadersAreStripped(t *testing.T) {
+ 		t.Errorf("authorization = %q, want the real token", got)
+ 	}
+ }
++
++// The guest chooses the Host header; the broker chooses where the credential
++// goes. Those must not be the same thing: a request carrying a real secret
++// should arrive addressed to the name whose certificate was verified and whose
++// credential was selected, not to whatever the guest wrote.
++func TestGuestCannotChooseTheHostTheSecretIsSentTo(t *testing.T) {
++	const real = "sk-the-real-secret"
++
++	var seenHost string
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatalf("listen: %v", err)
++	}
++	defer listener.Close()
++
++	serverCA, err := NewCA()
++	if err != nil {
++		t.Fatalf("server CA: %v", err)
++	}
++	serverLeaf, err := serverCA.LeafFor("127.0.0.1")
++	if err != nil {
++		t.Fatalf("server leaf: %v", err)
++	}
++	upstream := &http.Server{Handler: http.HandlerFunc(
++		func(w http.ResponseWriter, r *http.Request) {
++			seenHost = r.Host
++			w.WriteHeader(http.StatusOK)
++		})}
++	go upstream.Serve(tls.NewListener(listener, &tls.Config{
++		Certificates: []tls.Certificate{*serverLeaf},
++	}))
++	defer upstream.Close()
++
++	host := listener.Addr().String()
++	b, err := Load(writeConfig(t, []Credential{
++		{Domain: "127.0.0.1", Header: "x-api-key", Value: real},
++	}))
++	if err != nil || b == nil {
++		t.Fatalf("Load: %v", err)
++	}
++
++	guestSide, brokerSide := net.Pipe()
++	serverPool := x509.NewCertPool()
++	serverPool.AppendCertsFromPEM(serverCA.CertPEM())
++
++	done := make(chan error, 1)
++	go func() {
++		done <- b.handleWithRoots(brokerSide, host, func() (net.Conn, error) {
++			return net.Dial("tcp", host)
++		}, serverPool)
++	}()
++
++	guestPool := x509.NewCertPool()
++	guestPool.AppendCertsFromPEM(b.CA().CertPEM())
++	client := tls.Client(guestSide, &tls.Config{
++		ServerName: "127.0.0.1", RootCAs: guestPool,
++	})
++	req, _ := http.NewRequest("GET", "https://127.0.0.1/v1/messages", nil)
++	req.Header.Set("x-api-key", "airlock-managed")
++	// The guest addresses the request somewhere else entirely.
++	req.Host = "evil.example.org"
++	if err := req.Write(client); err != nil {
++		t.Fatalf("guest write: %v", err)
++	}
++	resp, err := http.ReadResponse(newReader(client), req)
++	if err != nil {
++		t.Fatalf("guest read: %v", err)
++	}
++	resp.Body.Close()
++	client.Close()
++	guestSide.Close()
++	<-done
++
++	if seenHost == "evil.example.org" {
++		t.Errorf("upstream saw Host %q: the guest chose where a request carrying the real secret was addressed", seenHost)
++	}
++}
