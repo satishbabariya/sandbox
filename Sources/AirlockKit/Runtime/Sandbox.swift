@@ -10,6 +10,9 @@ import SystemPackage
 public enum SandboxError: Error, CustomStringConvertible {
     case kernelNotFound(URL)
     case notRunning
+    /// A VM refused to start. Reported with the remedy when the cause is the
+    /// missing entitlement, which is the overwhelmingly common one.
+    case notEntitled(underlying: any Error)
 
     public var description: String {
         switch self {
@@ -17,6 +20,20 @@ public enum SandboxError: Error, CustomStringConvertible {
             return """
                 no Linux kernel at \(url.path)
                 fetch one with: airlock kernel install
+                """
+        case .notEntitled(let underlying):
+            // The reason carries the detail; the description alone is only
+            // "Invalid virtual machine configuration", which says nothing.
+            let error = underlying as NSError
+            let reason = error.localizedFailureReason ?? error.localizedDescription
+            // Only claim to know the cause when the system actually said so;
+            // any other failure to start is passed through as it came.
+            guard reason.contains("entitlement") else { return String(describing: underlying) }
+            return """
+                \(reason)
+                the binary must be signed with com.apple.security.virtualization
+                a plain `swift build`, or a `swift test`, replaces the signed one
+                run: make build
                 """
         case .notRunning:
             return "sandbox is not running"
@@ -255,7 +272,21 @@ public actor Sandbox {
     }
 
     /// Bring the sandbox up and return once its process has been started.
+    ///
+    /// Wrapped so a missing entitlement is reported with its remedy wherever it
+    /// surfaces. Virtualization rejects the configuration rather than the
+    /// start, and a plain `swift build` -- or a `swift test`, which rebuilds
+    /// the executable -- produces exactly that. It is the first thing a
+    /// contributor hits and the last thing they would guess.
     public func start(gatewayBinary: URL) async throws {
+        do {
+            try await bringUp(gatewayBinary: gatewayBinary)
+        } catch {
+            throw SandboxError.notEntitled(underlying: error)
+        }
+    }
+
+    private func bringUp(gatewayBinary: URL) async throws {
         var mark = Date()
         // A kernel image is data, not a program — readable is the right test.
         guard FileManager.default.isReadableFile(atPath: paths.kernel.path) else {
