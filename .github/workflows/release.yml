@@ -51,6 +51,13 @@ jobs:
             Sources/SandboxKit/Version.swift
           grep current Sources/SandboxKit/Version.swift
 
+      # The gateway first: one Swift test boots the real gvsandbox to check it
+      # answers DHCP, and `swift build` does not produce that binary. CI was
+      # fixed for this and the release workflow was not, so the first tag
+      # failed here -- after stamping the version, before publishing anything.
+      - name: Build the gateway
+        run: make -C netstack
+
       - name: Test
         run: |
           swift test
