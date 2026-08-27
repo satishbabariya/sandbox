@@ -1,7 +1,7 @@
 Gate ICMP on the same policy as a dial
 
 Upstream forwards ICMP echo requests unconditionally. That left a path
-out of a sandbox that airlock reports as reaching nothing: with no allow
+out of a sandbox that sandbox reports as reaching nothing: with no allow
 rules at all, the guest pinged 1.1.1.1 and got a reply, and nothing was
 written to the audit log. An echo request carries a payload and elicits a
 reply, so it is both a reachability oracle and a channel out.

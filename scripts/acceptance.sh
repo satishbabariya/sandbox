@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end acceptance for airlock. Every case boots a real VM.
+# End-to-end acceptance for sandbox. Every case boots a real VM.
 #
 # This exists because the project's central claim — that a compromised agent
 # cannot get out — is not something unit tests can establish. Exits non-zero if
@@ -17,18 +17,18 @@ cd "$(dirname "$0")/.." || exit 1
 # Counting the processes a sandbox owns. Defined up here because more than one
 # section needs them, and a helper defined below its first use is only a
 # problem the day somebody adds a case above it.
-count_gateways() { pgrep -f "bin/gvairlock" 2>/dev/null | wc -l | tr -d " "; }
-count_supervisors() { pgrep -f "airlock supervise" 2>/dev/null | wc -l | tr -d " "; }
+count_gateways() { pgrep -f "bin/gvsandbox" 2>/dev/null | wc -l | tr -d " "; }
+count_supervisors() { pgrep -f "sandbox supervise" 2>/dev/null | wc -l | tr -d " "; }
 
-AGENTS_DIR="$HOME/.airlock/agents"
+AGENTS_DIR="$HOME/.sandbox/agents"
 mkdir -p "$AGENTS_DIR"
 
-B="${AIRLOCK_BIN:-.build/debug/airlock}"
-# Absolute, because a case that runs airlock from a workspace it just created
+B="${SANDBOX_BIN:-.build/debug/sandbox}"
+# Absolute, because a case that runs sandbox from a workspace it just created
 # has to cd there first, and a relative path stops resolving the moment it does.
 case "$B" in /*) ;; *) B="$PWD/$B" ;; esac
-IMAGE="${AIRLOCK_TEST_IMAGE:-docker.io/library/alpine:3.20}"
-CLONE_IMAGE="${AIRLOCK_CLONE_IMAGE:-shell}"
+IMAGE="${SANDBOX_TEST_IMAGE:-docker.io/library/alpine:3.20}"
+CLONE_IMAGE="${SANDBOX_CLONE_IMAGE:-shell}"
 PASS=0
 FAIL=0
 
@@ -57,7 +57,7 @@ check() { # check <name> <expected-regex> <actual>
 }
 
 if [ ! -x "$B" ]; then
-  echo "airlock not built at $B; run: make build"
+  echo "sandbox not built at $B; run: make build"
   exit 1
 fi
 
@@ -101,7 +101,7 @@ echo "== egress by other protocols =="
 # ICMP echo carries a payload and elicits a reply, so forwarding one to any
 # address the guest names is both a reachability oracle and a channel out.
 # Upstream forwards them unconditionally: before this was gated, a sandbox with
-# no allow rules -- one airlock reports as reaching nothing -- pinged 1.1.1.1
+# no allow rules -- one sandbox reports as reaching nothing -- pinged 1.1.1.1
 # successfully, and nothing appeared in the audit log.
 out=$($B run "$IMAGE" --no-tty -- /bin/sh -c \
   'ping -c1 -W3 1.1.1.1 >/dev/null 2>&1 && echo ESCAPED || echo BLOCKED' 2>&1)
@@ -168,7 +168,7 @@ $B rm floodcase --force >/dev/null 2>&1
 $B run "$IMAGE" --name floodcase --detach --no-tty -- \
   /bin/sh -c 'yes "filling the host console" ; sleep 5' >/dev/null 2>&1
 sleep 12
-FLOOD_DIR=/tmp/airlock-floodcase
+FLOOD_DIR=/tmp/sandbox-floodcase
 flood_mb=$(du -sm "$FLOOD_DIR" 2>/dev/null | cut -f1)
 # Two generations of a 32 MiB cap, plus the sandbox's other small files.
 check "the console log is bounded" "yes" \
@@ -195,7 +195,7 @@ cat >"$AGENTS_DIR/acceptslow.json" <<'PROFILE'
  "install":["echo INSTALL_STARTED; sleep 600"],
  "command":["/bin/sh","-c","echo NEVER_REACHED"]}
 PROFILE
-rm -rf "$HOME/.airlock/cache/agents/acceptslow" 2>/dev/null || true
+rm -rf "$HOME/.sandbox/cache/agents/acceptslow" 2>/dev/null || true
 SLOW_GW=$(count_gateways)
 $B run acceptslow --no-tty -- /bin/true >/dev/null 2>&1 &
 SLOW_PID=$!
@@ -219,10 +219,10 @@ check "leaving no gateway behind" "yes" \
 # exit() does not unwind, so the cleanup that runs on a normal exit does not.
 # A half-built rootfs is hundreds of MB and nothing else would remove it.
 check_absent "and no half-built rootfs" "acceptslow" \
-  "$(ls "$HOME/.airlock/images/containers/" 2>/dev/null || true)"
+  "$(ls "$HOME/.sandbox/images/containers/" 2>/dev/null || true)"
 rm -f "$AGENTS_DIR/acceptslow.json"
 
-echo "== airlock says what it is holding =="
+echo "== sandbox says what it is holding =="
 
 # Cached agent environments and pulled image layers grow without bound, and
 # only one of them can be reclaimed: clearing the image content store leaves
@@ -230,7 +230,7 @@ echo "== airlock says what it is holding =="
 # verified rather than assumed. So the figure is reported instead of a command
 # being offered that would break things.
 out=$($B doctor 2>&1)
-check "the footprint is reported" "airlock is holding" "$out"
+check "the footprint is reported" "sandbox is holding" "$out"
 check "broken into what can be cleared" "agent environments" "$out"
 check "and what cannot" "images" "$out"
 
@@ -239,7 +239,7 @@ echo "== abandoned state can be reclaimed =="
 # A run that exits normally clears its own directories. One that is killed --
 # a timeout, a crash, a machine going to sleep -- does not, and nothing
 # reclaimed those: 280 had accumulated during development, holding 52GB.
-STALE="$HOME/.airlock/images/containers/acceptance-stale-probe"
+STALE="$HOME/.sandbox/images/containers/acceptance-stale-probe"
 mkdir -p "$STALE"
 head -c 200000 /dev/zero >"$STALE/rootfs.ext4" 2>/dev/null
 # Older than the margin prune uses to decide nobody is coming back for it.
@@ -249,7 +249,7 @@ check "doctor notices it" "abandoned director" "$($B doctor 2>&1)"
 out=$($B prune 2>&1)
 check "prune reclaims it and says how much" "abandoned director" "$out"
 check_absent "and it is gone" "acceptance-stale-probe" \
-  "$(ls "$HOME/.airlock/images/containers/" 2>/dev/null || true)"
+  "$(ls "$HOME/.sandbox/images/containers/" 2>/dev/null || true)"
 
 # The dangerous half: an ephemeral run keeps no record, so age is the only
 # thing separating one in flight from one abandoned.
@@ -277,13 +277,13 @@ check "and still has one after a concurrent prune" "AFTER_OK" "$inflight_out"
 $B run "$IMAGE" --no-tty -- /bin/sh -c 'sleep 30; echo INTACT' >/dev/null 2>&1 &
 STORAGE_PID=$!
 sleep 8
-LIVE_ID=$(find /tmp -maxdepth 1 -name 'airlock-*' -type d -newermt '-30 seconds' \
-  -exec basename {} \; 2>/dev/null | head -1 | sed 's/^airlock-//')
-touch -t 202001010000 "$HOME/.airlock/run/$LIVE_ID" \
-  "$HOME/.airlock/images/containers/$LIVE_ID" 2>/dev/null || true
+LIVE_ID=$(find /tmp -maxdepth 1 -name 'sandbox-*' -type d -newermt '-30 seconds' \
+  -exec basename {} \; 2>/dev/null | head -1 | sed 's/^sandbox-//')
+touch -t 202001010000 "$HOME/.sandbox/run/$LIVE_ID" \
+  "$HOME/.sandbox/images/containers/$LIVE_ID" 2>/dev/null || true
 $B prune >/dev/null 2>&1
 check "a live sandbox keeps its rootfs however old it looks" "yes" \
-  "$([ -e "$HOME/.airlock/images/containers/$LIVE_ID" ] && echo yes || echo no)"
+  "$([ -e "$HOME/.sandbox/images/containers/$LIVE_ID" ] && echo yes || echo no)"
 wait "$STORAGE_PID" 2>/dev/null
 
 # A pid file outlives the process it names and pids are reused, so a stale one
@@ -292,32 +292,32 @@ wait "$STORAGE_PID" 2>/dev/null
 /bin/sleep 90 &
 DECOY_PID=$!
 sleep 1
-mkdir -p /tmp/airlock-recycled-pid
-echo "$DECOY_PID" >/tmp/airlock-recycled-pid/gateway.pid
+mkdir -p /tmp/sandbox-recycled-pid
+echo "$DECOY_PID" >/tmp/sandbox-recycled-pid/gateway.pid
 $B prune >/dev/null 2>&1
 sleep 1
 check "an unrelated process holding a recorded pid is not signalled" "yes" \
   "$(kill -0 "$DECOY_PID" 2>/dev/null && echo yes || echo no)"
 # ...and its directory is still reclaimed, or a recycled pid would protect
 # garbage for as long as that process happened to live.
-check_absent "while its directory is still reclaimed" "airlock-recycled-pid" \
-  "$(ls -d /tmp/airlock-recycled-pid 2>/dev/null || true)"
+check_absent "while its directory is still reclaimed" "sandbox-recycled-pid" \
+  "$(ls -d /tmp/sandbox-recycled-pid 2>/dev/null || true)"
 kill "$DECOY_PID" 2>/dev/null || true
-rm -rf /tmp/airlock-recycled-pid
+rm -rf /tmp/sandbox-recycled-pid
 
 # The sweep matched on the name prefix alone, so it deleted any file in /tmp
-# called airlock-something -- including one of this suite's own logs.
-echo keep-me >/tmp/airlock-not-a-sandbox.log
+# called sandbox-something -- including one of this suite's own logs.
+echo keep-me >/tmp/sandbox-not-a-sandbox.log
 $B prune >/dev/null 2>&1
 check "an unrelated file in /tmp is left alone" "keep-me" \
-  "$(cat /tmp/airlock-not-a-sandbox.log 2>&1)"
-rm -f /tmp/airlock-not-a-sandbox.log
+  "$(cat /tmp/sandbox-not-a-sandbox.log 2>&1)"
+rm -f /tmp/sandbox-not-a-sandbox.log
 
 echo "== a secret that cannot be read says so instead of waiting =="
 
 # macOS ties a keychain item's authorisation to the binary that stored it, so a
-# rebuilt or upgraded airlock must be approved again. Under automation nobody
-# answers that dialog: `airlock run claude` sat for nineteen minutes with an
+# rebuilt or upgraded sandbox must be approved again. Under automation nobody
+# answers that dialog: `sandbox run claude` sat for nineteen minutes with an
 # empty runtime directory and no output, because a prompt was waiting where
 # nobody could see it.
 printf '%s' "sk-check-probe" | $B secret set anthropic --stdin >/dev/null 2>&1
@@ -335,9 +335,9 @@ check "and reported by exit status" "1" "$status"
 echo "== interception is scoped to the domains a credential is bound to =="
 
 # Substituting a credential means terminating TLS, so the guest is given a CA
-# to trust. If that were used for everything, airlock would read all of the
+# to trust. If that were used for everything, sandbox would read all of the
 # agent's traffic in clear -- a far larger claim on a user's trust than
-# brokering one API key. Asked by trusting only airlock's CA and seeing which
+# brokering one API key. Asked by trusting only sandbox's CA and seeing which
 # host verifies against it.
 printf '%s' "sk-scope-probe" | $B secret set anthropic --stdin >/dev/null 2>&1
 out=$($B run docker.io/library/python:3.12-alpine --no-tty --secret anthropic \
@@ -355,17 +355,17 @@ def verifies(host, cafile):
     except Exception as e:
         return type(e).__name__
 
-CA = "/etc/airlock/airlock-ca.crt"
+CA = "/etc/sandbox/sandbox-ca.crt"
 for host in ["api.anthropic.com", "example.com"]:
-    print(host, "airlock=" + verifies(host, CA))
+    print(host, "sandbox=" + verifies(host, CA))
 ' 2>&1)
-check "a bound domain is intercepted" "api.anthropic.com airlock=yes" "$out"
-check "an unbound domain is not" "example.com airlock=no" "$out"
+check "a bound domain is intercepted" "api.anthropic.com sandbox=yes" "$out"
+check "an unbound domain is not" "example.com sandbox=no" "$out"
 
 # The key that would let anything be intercepted never leaves the host.
 out=$($B run "$IMAGE" --no-tty --secret anthropic -- /bin/sh -c \
-  'ls /etc/airlock/; grep -rl "PRIVATE KEY" /etc/airlock /etc/ssl 2>/dev/null | head -2' 2>&1)
-check "the guest is given the certificate" "airlock-ca.crt" "$out"
+  'ls /etc/sandbox/; grep -rl "PRIVATE KEY" /etc/sandbox /etc/ssl 2>/dev/null | head -2' 2>&1)
+check "the guest is given the certificate" "sandbox-ca.crt" "$out"
 check_absent "and never the private key" "PRIVATE KEY" "$out"
 $B secret rm anthropic >/dev/null 2>&1
 
@@ -380,8 +380,8 @@ $B run "$IMAGE" --name permcase --detach --no-tty -- \
   /bin/sh -c 'echo SENSITIVE_AGENT_OUTPUT; sleep 60' >/dev/null 2>&1
 sleep 3
 check "the runtime directory is owner-only" "^drwx------" \
-  "$(stat -f '%Sp' /tmp/airlock-permcase 2>&1)"
-check "so is the state directory" "^drwx------" "$(stat -f '%Sp' "$HOME/.airlock" 2>&1)"
+  "$(stat -f '%Sp' /tmp/sandbox-permcase 2>&1)"
+check "so is the state directory" "^drwx------" "$(stat -f '%Sp' "$HOME/.sandbox" 2>&1)"
 # The control: it has to still work through its own tightened directory.
 check "control: the sandbox still works" "EXEC_OK" \
   "$($B exec permcase -- /bin/sh -c 'echo EXEC_OK' 2>&1)"
@@ -425,7 +425,7 @@ echo "== the guest cannot publish itself to the host =="
 # so a VM can ask for forwards. The guest is the untrusted party here and the
 # endpoint needs no credential: a sandbox with no allow rules opened a listener
 # on the host at *:19099 -- every interface, not loopback -- pointed at a
-# service of its own, which `airlock ports` did not show because airlock had
+# service of its own, which `sandbox ports` did not show because sandbox had
 # published nothing.
 $B rm exposecase --force >/dev/null 2>&1
 $B run docker.io/library/python:3.12-alpine --name exposecase --detach --no-tty -- /bin/sh -c '
@@ -541,7 +541,7 @@ echo "== config precedence =="
 # A deny in config is a machine-wide block. If a flag could lift it, an
 # operator could not rely on it, so this is a security property not a
 # preference.
-CONFIG="$HOME/.airlock/config.json"
+CONFIG="$HOME/.sandbox/config.json"
 SAVED=""
 [ -f "$CONFIG" ] && SAVED=$(cat "$CONFIG")
 
@@ -561,8 +561,8 @@ if [ -n "$SAVED" ]; then printf '%s' "$SAVED" >"$CONFIG"; fi
 echo "== docker inside the sandbox =="
 
 # Skippable: it pulls a dind image and is the slowest case here.
-if [ "${AIRLOCK_SKIP_DOCKER:-0}" = "1" ]; then
-  echo "  skipped (AIRLOCK_SKIP_DOCKER=1)"
+if [ "${SANDBOX_SKIP_DOCKER:-0}" = "1" ]; then
+  echo "  skipped (SANDBOX_SKIP_DOCKER=1)"
 else
   out=$($B run docker.io/library/docker:28-dind --docker --no-tty \
     --allow '*.docker.io' --allow '*.docker.com' -- /bin/sh -c '
@@ -610,10 +610,10 @@ STAGE=$(mktemp -d)
 echo "host-original" >"$STAGE/config.json"
 BEFORE=$(shasum -a 256 "$STAGE/config.json" | cut -d" " -f1)
 "$B" run "$CLONE_IMAGE" --no-tty --mount "$STAGE/config.json:/tmp/cfg.json:copy" -- \
-  /bin/sh -c 'echo guest-overwrote >/tmp/cfg.json; cat /tmp/cfg.json' >/tmp/airlock-copy.log 2>&1
-check "guest can write its copy" "guest-overwrote" "$(cat /tmp/airlock-copy.log)"
+  /bin/sh -c 'echo guest-overwrote >/tmp/cfg.json; cat /tmp/cfg.json' >/tmp/sandbox-copy.log 2>&1
+check "guest can write its copy" "guest-overwrote" "$(cat /tmp/sandbox-copy.log)"
 check "host file is untouched" "^$BEFORE$" "$(shasum -a 256 "$STAGE/config.json" | cut -d' ' -f1)"
-rm -rf "$STAGE" /tmp/airlock-copy.log
+rm -rf "$STAGE" /tmp/sandbox-copy.log
 
 echo "== the audit log explains refusals =="
 
@@ -664,7 +664,7 @@ echo "== cleanup =="
 # rather than assuming this machine is otherwise idle.
 BASELINE_GATEWAYS=$(count_gateways)
 count_dirs() {
-  set -- /tmp/airlock-*
+  set -- /tmp/sandbox-*
   [ -e "$1" ] && echo "$#" || echo 0
 }
 
@@ -676,10 +676,10 @@ BEFORE_DIRS=$(count_dirs)
 check "ephemeral run leaves no state" "^$BEFORE_DIRS$" "$(count_dirs)"
 
 # Ctrl-C must take the gateway with it, or every interrupted run leaks a VM.
-"$B" run "$CLONE_IMAGE" --no-tty -- /bin/sh -c "echo READY; sleep 120" >/tmp/airlock-sigint.log 2>&1 &
+"$B" run "$CLONE_IMAGE" --no-tty -- /bin/sh -c "echo READY; sleep 120" >/tmp/sandbox-sigint.log 2>&1 &
 SIG_PID=$!
 SPENT=0
-while ! grep -q READY /tmp/airlock-sigint.log 2>/dev/null && [ "$SPENT" -lt 120 ]; do
+while ! grep -q READY /tmp/sandbox-sigint.log 2>/dev/null && [ "$SPENT" -lt 120 ]; do
   sleep 2
   SPENT=$((SPENT + 2))
 done
@@ -694,7 +694,7 @@ fi
 kill -INT "$SIG_PID" 2>/dev/null
 sleep 8
 check "SIGINT stops the gateway" "^$BASELINE_GATEWAYS$" "$(count_gateways)"
-rm -f /tmp/airlock-sigint.log
+rm -f /tmp/sandbox-sigint.log
 "$B" prune >/dev/null 2>&1
 
 echo "== credentials =="
@@ -703,7 +703,7 @@ SECRET="sk-acceptance-not-a-real-key"
 printf '%s' "$SECRET" | $B secret set anthropic --stdin >/dev/null 2>&1
 out=$($B run "$IMAGE" --secret anthropic -- /bin/sh -c \
   'echo "KEY=$ANTHROPIC_API_KEY"; echo "LEAKS=$(env | grep -c sk-acceptance)"' 2>&1)
-check "guest sees only the sentinel" "KEY=airlock-managed" "$out"
+check "guest sees only the sentinel" "KEY=sandbox-managed" "$out"
 check "real secret never enters the guest" "LEAKS=0" "$out"
 $B secret rm anthropic >/dev/null 2>&1
 
@@ -733,15 +733,15 @@ check_absent "an ordinary sandbox has no trace of it" "snapshot-marker" "$out"
 echo "== copying files in and out =="
 
 PAYLOAD="cp-payload-$$"
-printf '%s\n' "$PAYLOAD" >/tmp/airlock-cp-in.txt
-rm -f /tmp/airlock-cp-out.txt
-$B cp /tmp/airlock-cp-in.txt snaptest:/root/copied.txt >/dev/null 2>&1
+printf '%s\n' "$PAYLOAD" >/tmp/sandbox-cp-in.txt
+rm -f /tmp/sandbox-cp-out.txt
+$B cp /tmp/sandbox-cp-in.txt snaptest:/root/copied.txt >/dev/null 2>&1
 check "a copied file arrives in the guest" "$PAYLOAD" \
   "$($B exec snaptest -- /bin/sh -c 'cat /root/copied.txt' 2>&1)"
 
-$B cp snaptest:/root/copied.txt /tmp/airlock-cp-out.txt >/dev/null 2>&1
-check "and comes back unchanged" "$PAYLOAD" "$(cat /tmp/airlock-cp-out.txt 2>&1)"
-rm -f /tmp/airlock-cp-in.txt /tmp/airlock-cp-out.txt
+$B cp snaptest:/root/copied.txt /tmp/sandbox-cp-out.txt >/dev/null 2>&1
+check "and comes back unchanged" "$PAYLOAD" "$(cat /tmp/sandbox-cp-out.txt 2>&1)"
+rm -f /tmp/sandbox-cp-in.txt /tmp/sandbox-cp-out.txt
 
 $B rm snaptest --force >/dev/null 2>&1
 $B templates rm accepttpl >/dev/null 2>&1
@@ -756,12 +756,12 @@ rm -f "$AGENTS_DIR/acceptprov.json"
 cat >"$AGENTS_DIR/acceptprov.json" <<'PROFILE'
 {"name":"acceptprov","displayName":"provisioning acceptance",
  "image":"docker.io/library/python:3.12-alpine",
- "command":["/bin/sh","-c","sleep 3; cat '/etc/airlock probe/data.txt'; /usr/local/bin/probe; wget -q -O- http://127.0.0.1:8231/data.txt 2>&1 | head -1"],
+ "command":["/bin/sh","-c","sleep 3; cat '/etc/sandbox probe/data.txt'; /usr/local/bin/probe; wget -q -O- http://127.0.0.1:8231/data.txt 2>&1 | head -1"],
  "files":[
-   {"path":"/etc/airlock probe/data.txt","content":"it's $HOME `whoami` VERBATIM\n"},
+   {"path":"/etc/sandbox probe/data.txt","content":"it's $HOME `whoami` VERBATIM\n"},
    {"path":"/usr/local/bin/probe","mode":"0755","content":"#!/bin/sh\necho PROBE_EXECUTED\n"}],
  "startup":[
-   {"argv":["/bin/sh","-c","cp '/etc/airlock probe/data.txt' /srv-data.txt 2>/dev/null; mkdir -p /srv && cp '/etc/airlock probe/data.txt' /srv/data.txt"]},
+   {"argv":["/bin/sh","-c","cp '/etc/sandbox probe/data.txt' /srv-data.txt 2>/dev/null; mkdir -p /srv && cp '/etc/sandbox probe/data.txt' /srv/data.txt"]},
    {"argv":["/bin/sh","-c","python3 -m http.server 8231 --directory /srv"],"background":true},
    {"argv":["/bin/false"]}]}
 PROFILE
@@ -812,7 +812,7 @@ for _ in 1 2 3 4 5 6 7 8; do
   sleep 1
 done
 
-check "airlock ports names the mapping" "18231 -> 8231" "$($B ports portcase 2>&1)"
+check "sandbox ports names the mapping" "18231 -> 8231" "$($B ports portcase 2>&1)"
 check "a published port is reachable from the host" "PUBLISHED_PORT" \
   "$(curl -s --max-time 8 http://127.0.0.1:18231/index.html 2>&1)"
 # The control above proves the guest is up and serving, so a failure here is
@@ -910,7 +910,7 @@ echo original >"$INSTR_DIR/kept.txt"
 # file to it, and must say why the agent did not get its guidance.
 out=$(cd "$INSTR_DIR" && $B run acceptinstr --no-tty 2>&1)
 check_absent "nothing is written into your own working tree" "KIT_GUIDANCE_DELIVERED" "$out"
-check "and airlock says why not" "Use --clone" "$out"
+check "and sandbox says why not" "Use --clone" "$out"
 check_absent "your tree gains no file" "AGENTS.md" "$(ls -a "$INSTR_DIR" 2>&1)"
 
 # A clone is the agent's own tree, so the guidance belongs there.
@@ -943,7 +943,7 @@ check "control: and a supervisor holding its VM" "yes" \
   "$([ "$(count_supervisors)" -gt "$BASE_SUP" ] && echo yes || echo no)"
 
 # Remove the record behind its back, which is the state a crash leaves.
-rm -f "$HOME/.airlock/sandboxes/orphancase.json"
+rm -f "$HOME/.sandbox/sandboxes/orphancase.json"
 out=$($B prune 2>&1)
 check "prune says it stopped the supervisor" "orphaned supervisor" "$out"
 check "prune says it stopped the gateway" "orphaned gateway" "$out"
@@ -962,8 +962,8 @@ for _ in 1 2 3 4 5 6; do
   [ "$(count_supervisors)" -gt "$BASE_SUP" ] && break
   sleep 1
 done
-rm -f "$HOME/.airlock/sandboxes/straycase.json"
-rm -rf /tmp/airlock-straycase
+rm -f "$HOME/.sandbox/sandboxes/straycase.json"
+rm -rf /tmp/sandbox-straycase
 check "doctor reports a process still holding a VM" "holding a VM" "$($B doctor 2>&1)"
 out=$($B prune 2>&1)
 check "prune finds a process whose directory is gone" "stray supervisor" "$out"
@@ -976,7 +976,7 @@ echo "== a kit is imported and run =="
 # Translating a kit and running one are different things: three bugs that made
 # every real kit fail to install got through a suite that only ever inspected
 # them. This kit is self-contained -- it installs from a printf, not from a
-# GitHub release -- so the case tests airlock rather than the network.
+# GitHub release -- so the case tests sandbox rather than the network.
 $B kit import testdata/kits/selftest --name acceptkit --force >/dev/null 2>&1
 check "control: the kit imports" "acceptkit" "$($B agents ls 2>&1)"
 
@@ -988,10 +988,10 @@ out=$($B run acceptkit --no-tty --secret selftest 2>&1)
 check "a multi-line install step runs" "INSTALLED_BY_KIT" "$out"
 check "a declared file is written" "DECLARED_FILE_WRITTEN" "$out"
 check "a startup command runs" "STARTUP_RAN" "$out"
-# The kit names a service airlock ships no preset for; the binding and the
+# The kit names a service sandbox ships no preset for; the binding and the
 # variable both have to come from the kit, or the tool is never told there is
 # a key at all.
-check "a kit-declared credential reaches the tool" "KEY=airlock-managed" "$out"
+check "a kit-declared credential reaches the tool" "KEY=sandbox-managed" "$out"
 check_absent "and the real value does not" "sk-selftest-not-a-real-key" "$out"
 
 $B secret rm selftest >/dev/null 2>&1
@@ -1004,8 +1004,8 @@ echo "== every built-in agent starts =="
 # their install steps still worked against the registries they pull from.
 # Opt-in: building each environment from scratch pulls an image and installs a
 # toolchain, which is minutes per agent on a cold cache.
-if [ "${AIRLOCK_ALL_AGENTS:-0}" != "1" ]; then
-  echo "  skipped (set AIRLOCK_ALL_AGENTS=1 to build and run every agent)"
+if [ "${SANDBOX_ALL_AGENTS:-0}" != "1" ]; then
+  echo "  skipped (set SANDBOX_ALL_AGENTS=1 to build and run every agent)"
 else
   for agent in claude codex gemini opencode shell; do
     out=$($B run "$agent" --no-tty -- /bin/sh -c 'echo "STARTED uid=$(id -u)"' 2>&1)
@@ -1025,8 +1025,8 @@ echo "== a real agent, end to end =="
 # the host. It is the claim the whole project rests on -- an agent doing real
 # work without ever holding the credential -- so it is here rather than only in
 # somebody's memory of having tried it once.
-if [ "${AIRLOCK_AGENT_E2E:-0}" != "1" ]; then
-  echo "  skipped (set AIRLOCK_AGENT_E2E=1 to run; needs a host sign-in)"
+if [ "${SANDBOX_AGENT_E2E:-0}" != "1" ]; then
+  echo "  skipped (set SANDBOX_AGENT_E2E=1 to run; needs a host sign-in)"
 else
   E2E_DIR=$(mktemp -d)
   cat >"$E2E_DIR/calc.py" <<'PYFILE'
@@ -1049,7 +1049,7 @@ PYFILE
   # token that let it.
   leak=$($B run claude --no-tty --secret claude -- /bin/sh -c \
     'echo "KEY=$ANTHROPIC_API_KEY"; echo "LEAKS=$(env | grep -c sk-ant)"' 2>&1)
-  check "the guest saw only the sentinel" "KEY=airlock-managed" "$leak"
+  check "the guest saw only the sentinel" "KEY=sandbox-managed" "$leak"
   check "the real token never entered the guest" "LEAKS=0" "$leak"
   rm -rf "$E2E_DIR"
 fi

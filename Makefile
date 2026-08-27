@@ -1,4 +1,4 @@
-# airlock
+# sandbox
 #
 # The CLI must be codesigned with com.apple.security.virtualization or
 # Virtualization refuses to start the VM at runtime. Ad-hoc signing is enough
@@ -7,10 +7,10 @@
 CONFIG      ?= debug
 SIGN_ID     ?= -
 BUILD_DIR   := .build/$(CONFIG)
-CLI         := $(BUILD_DIR)/airlock
-GATEWAY     := .build/bin/gvairlock
+CLI         := $(BUILD_DIR)/sandbox
+GATEWAY     := .build/bin/gvsandbox
 KERNEL      := .local/vmlinux-arm64
-AIRLOCK_HOME ?= $(HOME)/.airlock
+SANDBOX_HOME ?= $(HOME)/.sandbox
 
 KATA_VERSION ?= 3.17.0
 KATA_URL := https://github.com/kata-containers/kata-containers/releases/download/$(KATA_VERSION)/kata-static-$(KATA_VERSION)-arm64.tar.xz
@@ -31,9 +31,9 @@ cli:
 .PHONY: sign
 sign: cli
 	@codesign --force --sign $(SIGN_ID) \
-	   --entitlements airlock.entitlements \
+	   --entitlements sandbox.entitlements \
 	   --options runtime $(CLI) 2>/dev/null \
-	 || codesign --force --sign $(SIGN_ID) --entitlements airlock.entitlements $(CLI)
+	 || codesign --force --sign $(SIGN_ID) --entitlements sandbox.entitlements $(CLI)
 	@echo "signed $(CLI)"
 	@codesign -d --entitlements - $(CLI) 2>&1 | grep -q virtualization \
 	  && echo "  com.apple.security.virtualization present" \
@@ -64,9 +64,9 @@ $(KERNEL):
 # Stage the kernel where the CLI looks for it at runtime.
 .PHONY: install-kernel
 install-kernel: $(KERNEL)
-	@mkdir -p $(AIRLOCK_HOME)
-	@cp $(KERNEL) $(AIRLOCK_HOME)/vmlinux-arm64
-	@echo "installed kernel to $(AIRLOCK_HOME)/vmlinux-arm64"
+	@mkdir -p $(SANDBOX_HOME)
+	@cp $(KERNEL) $(SANDBOX_HOME)/vmlinux-arm64
+	@echo "installed kernel to $(SANDBOX_HOME)/vmlinux-arm64"
 
 # The CLI finds the gateway beside itself, so both go in the same bin
 # directory. Installing the debug build would work but ships an unoptimised
@@ -80,14 +80,14 @@ PREFIX ?= /usr/local
 # and the entitlement it carries is what decides whether it can start a VM at
 # all. VERSION is the tag, e.g. v0.1.0.
 VERSION ?= v0.0.0-dev
-STAGE := airlock-$(VERSION)-darwin-arm64
+STAGE := sandbox-$(VERSION)-darwin-arm64
 
 .PHONY: package
 package:
 	@$(MAKE) build CONFIG=release
 	@rm -rf dist/$(STAGE)
 	@mkdir -p dist/$(STAGE)/bin
-	@cp .build/release/airlock dist/$(STAGE)/bin/
+	@cp .build/release/sandbox dist/$(STAGE)/bin/
 	@cp $(GATEWAY) dist/$(STAGE)/bin/
 	@cp README.md LICENSE SECURITY.md dist/$(STAGE)/
 	@tar -czf dist/$(STAGE).tar.gz -C dist $(STAGE)
@@ -101,32 +101,32 @@ package:
 verify-package:
 	@rm -rf dist/verify && mkdir -p dist/verify
 	@tar -xzf dist/$(STAGE).tar.gz -C dist/verify
-	@codesign -d --entitlements - dist/verify/$(STAGE)/bin/airlock 2>&1 \
+	@codesign -d --entitlements - dist/verify/$(STAGE)/bin/sandbox 2>&1 \
 	  | grep -q virtualization \
 	  || { echo "ERROR: the archived binary has no virtualization entitlement"; exit 1; }
-	@test -x dist/verify/$(STAGE)/bin/gvairlock \
+	@test -x dist/verify/$(STAGE)/bin/gvsandbox \
 	  || { echo "ERROR: the archive has no gateway, so no sandbox can start"; exit 1; }
-	@dist/verify/$(STAGE)/bin/airlock --version >/dev/null \
+	@dist/verify/$(STAGE)/bin/sandbox --version >/dev/null \
 	  || { echo "ERROR: the archived binary does not run"; exit 1; }
-	@echo "package ok: $$(dist/verify/$(STAGE)/bin/airlock --version), entitlement intact"
+	@echo "package ok: $$(dist/verify/$(STAGE)/bin/sandbox --version), entitlement intact"
 	@rm -rf dist/verify
 
 .PHONY: install
 install:
 	@$(MAKE) build CONFIG=release
 	@mkdir -p $(PREFIX)/bin
-	@cp .build/release/airlock $(PREFIX)/bin/airlock
-	@cp $(GATEWAY) $(PREFIX)/bin/gvairlock
-	@codesign -d --entitlements - $(PREFIX)/bin/airlock 2>&1 | grep -q virtualization \
+	@cp .build/release/sandbox $(PREFIX)/bin/sandbox
+	@cp $(GATEWAY) $(PREFIX)/bin/gvsandbox
+	@codesign -d --entitlements - $(PREFIX)/bin/sandbox 2>&1 | grep -q virtualization \
 	  || { echo "ERROR: installed binary lost its entitlement"; exit 1; }
 	@echo "installed to $(PREFIX)/bin"
-	@echo "next: airlock kernel install && airlock doctor"
+	@echo "next: sandbox kernel install && sandbox doctor"
 
 .PHONY: uninstall
 uninstall:
-	@rm -f $(PREFIX)/bin/airlock $(PREFIX)/bin/gvairlock
-	@echo "removed airlock and gvairlock from $(PREFIX)/bin"
-	@echo "state in $(AIRLOCK_HOME) was left alone; remove it by hand if you want it gone"
+	@rm -f $(PREFIX)/bin/sandbox $(PREFIX)/bin/gvsandbox
+	@echo "removed sandbox and gvsandbox from $(PREFIX)/bin"
+	@echo "state in $(SANDBOX_HOME) was left alone; remove it by hand if you want it gone"
 
 .PHONY: test
 test:

@@ -19,7 +19,7 @@ index cd0e7a0..f1661d2 100644
 +// RecordName writes a name-resolution decision to the audit log.
 +//
 +// A refusal at DNS is the most common kind, and until it was recorded
-+// "airlock policy log" had nothing to show for the case users hit most: a host
++// "sandbox policy log" had nothing to show for the case users hit most: a host
 +// that was never allowed at all. There is no address to report, because the
 +// point is that we never resolved one.
 +func (e *Engine) RecordName(name string, v Verdict) {

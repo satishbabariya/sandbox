@@ -42,14 +42,14 @@ jobs:
           # pinned SHA during the build.
           cache: false
 
-      # The version baked into the binary must match the tag, or `airlock
+      # The version baked into the binary must match the tag, or `sandbox
       # --version` lies about what a user is running.
       - name: Stamp version
         run: |
           V="${{ steps.version.outputs.value }}"
           sed -i '' "s|public static let current = \".*\"|public static let current = \"${V#v}\"|" \
-            Sources/AirlockKit/Version.swift
-          grep current Sources/AirlockKit/Version.swift
+            Sources/SandboxKit/Version.swift
+          grep current Sources/SandboxKit/Version.swift
 
       - name: Test
         run: |
@@ -77,10 +77,10 @@ jobs:
             echo "source tarball not ready yet (attempt $attempt)"; sleep 10
           done
           SHA=$(shasum -a 256 /tmp/src.tar.gz | cut -d" " -f1)
-          sed -i '' "s|^  url .*|  url \"${URL}\"|" packaging/airlock.rb
-          sed -i '' "s|^  sha256 .*|  sha256 \"${SHA}\"|" packaging/airlock.rb
-          grep -E "^  (url|sha256)" packaging/airlock.rb
-          cp packaging/airlock.rb dist/
+          sed -i '' "s|^  url .*|  url \"${URL}\"|" packaging/sandbox.rb
+          sed -i '' "s|^  sha256 .*|  sha256 \"${SHA}\"|" packaging/sandbox.rb
+          grep -E "^  (url|sha256)" packaging/sandbox.rb
+          cp packaging/sandbox.rb dist/
 
       - name: Publish
         uses: softprops/action-gh-release@v2
@@ -89,21 +89,21 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
-            dist/airlock.rb
+            dist/sandbox.rb
           body: |
             ## Install
 
             ```console
-            $ tar -xzf airlock-${{ steps.version.outputs.value }}-darwin-arm64.tar.gz
-            $ sudo cp airlock-*/bin/* /usr/local/bin/
-            $ airlock kernel install   # guest kernel, ~280 MiB, once
-            $ airlock doctor           # checks everything at once
+            $ tar -xzf sandbox-${{ steps.version.outputs.value }}-darwin-arm64.tar.gz
+            $ sudo cp sandbox-*/bin/* /usr/local/bin/
+            $ sandbox kernel install   # guest kernel, ~280 MiB, once
+            $ sandbox doctor           # checks everything at once
             ```
 
             Then:
 
             ```console
-            $ airlock run shell --allow example.com
+            $ sandbox run shell --allow example.com
             ```
 
             Requires Apple silicon and macOS 26.
@@ -111,8 +111,8 @@ jobs:
             The binary is signed ad-hoc with `com.apple.security.virtualization`,
             without which Virtualization refuses to start a VM at all. macOS
             quarantines anything downloaded through a browser, which strips it —
-            `airlock doctor` reports exactly that, and it is cleared with
-            `xattr -d com.apple.quarantine /usr/local/bin/airlock`.
+            `sandbox doctor` reports exactly that, and it is cleared with
+            `xattr -d com.apple.quarantine /usr/local/bin/sandbox`.
 
             ## What changed
 

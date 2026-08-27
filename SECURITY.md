@@ -5,15 +5,15 @@
 Please report privately via GitHub's ["Report a vulnerability"][advisory]
 button rather than opening a public issue.
 
-Include what you can: the airlock version (`airlock --version`), macOS version,
+Include what you can: the sandbox version (`sandbox --version`), macOS version,
 and the smallest reproduction you have. A working escape is more useful than a
 theory, but a well-argued theory is welcome too.
 
-[advisory]: https://github.com/satishbabariya/airlock/security/advisories/new
+[advisory]: https://github.com/satishbabariya/sandbox/security/advisories/new
 
 ## What is in scope
 
-airlock's claim is that a process inside a sandbox — **including one running as
+sandbox's claim is that a process inside a sandbox — **including one running as
 root with every Linux capability** — cannot reach a network destination its
 policy forbids. In scope:
 
@@ -37,7 +37,7 @@ README under "What this does NOT protect against":
 - **Side channels** — timing, or data encoded in DNS names inside an allowed
   zone.
 - **Sub-directory filesystem policy.** Virtualization.framework exposes no
-  per-file-operation hook, so airlock cannot express "allow `~/.ssh/config`,
+  per-file-operation hook, so sandbox cannot express "allow `~/.ssh/config`,
   deny `~/.ssh/id_rsa`". Share the narrower directory instead.
 - A Virtualization.framework or hypervisor escape. Report those to Apple; we
   will track and mitigate what we can.
@@ -45,7 +45,7 @@ README under "What this does NOT protect against":
 ## Known unverified behaviour
 
 Revoking a shared directory from a running sandbox may not close file
-descriptors the guest already holds open. This is why airlock does **not**
+descriptors the guest already holds open. This is why sandbox does **not**
 offer revocation as a security control. If you can establish the answer either
 way, that is a valuable contribution.
 

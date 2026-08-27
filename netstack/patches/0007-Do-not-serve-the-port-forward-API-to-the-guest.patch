@@ -1,15 +1,15 @@
 Do not serve the port-forward API to the guest
 
 Upstream serves its control API inside the virtual network at
-gatewayIP:80 so a VM can request port forwards. For airlock the guest is
+gatewayIP:80 so a VM can request port forwards. For sandbox the guest is
 the untrusted party, and reaching that endpoint needs no credential.
 
-A sandbox with no allow rules -- one airlock reports as reaching nothing
+A sandbox with no allow rules -- one sandbox reports as reaching nothing
 -- could POST to /services/forwarder/expose and open a listener on the
 host at *:19099, on every interface rather than loopback, forwarded to a
 service of its own choosing. The host could then reach it, and so could
-anything else on the network. `airlock ports` showed nothing, correctly,
-because airlock had published nothing.
+anything else on the network. `sandbox ports` showed nothing, correctly,
+because sandbox had published nothing.
 
 Ports are published from the host with -p. The guest does not get a say.
 
@@ -31,12 +31,12 @@ index 2588f02..b3b2bc8 100644
 -	mux.Handle("/services/forwarder/unexpose", vn.Mux())
 -	httpServe(ctx, g, ln, mux)
 +	// Upstream serves the port-forwarding control API inside the virtual
-+	// network, at gatewayIP:80, so a VM can ask for forwards. For airlock that
++	// network, at gatewayIP:80, so a VM can ask for forwards. For sandbox that
 +	// is a hole rather than a feature: the guest is the untrusted party, and
 +	// reaching it needs no credential. A guest could POST to
 +	// /services/forwarder/expose and open a listener on the host -- on every
 +	// interface, not just loopback -- pointed at a service of its own, which
-+	// `airlock ports` then did not show, because airlock never published it.
++	// `sandbox ports` then did not show, because sandbox never published it.
 +	//
 +	// Ports are published from the host with -p. The guest does not get a say.
  

@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to airlock. Dates are the release date; the format follows
+Notable changes to sandbox. Dates are the release date; the format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -21,16 +21,16 @@ egress they cannot bypass.
 - **The boundary is the host end of the guest's only network device**, not
   anything inside the guest. Verified against `--privileged` root holding every
   Linux capability with the default route replaced: still contained.
-- **An audit log that answers "why was that refused"**, via `airlock policy log`,
+- **An audit log that answers "why was that refused"**, via `sandbox policy log`,
   naming the rule that decided each connection.
 
 ### Credentials
 
-- Secrets are brokered, never handed to the guest: it sees `airlock-managed`
+- Secrets are brokered, never handed to the guest: it sees `sandbox-managed`
   while the real value is substituted on the host. Verified with a live Claude
   Code session — the token appears zero times inside the sandbox.
 - Interception is scoped to the domains a credential is bound to. A bound domain
-  verifies against airlock's CA; an unbound one does not, so the guest sees the
+  verifies against sandbox's CA; an unbound one does not, so the guest sees the
   real chain for everything else. The CA private key never enters the sandbox.
 - An existing Claude Code sign-in on the host is reused rather than re-entered.
 

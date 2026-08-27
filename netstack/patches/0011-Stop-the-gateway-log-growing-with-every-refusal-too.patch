@@ -6,7 +6,7 @@ same flood that filled 91KB of audit log filled 66KB of gateway.log
 beside it, so a guest could still fill the host's disk, just slower.
 
 The refusal is already recorded in the audit log, which is capped and
-is what `airlock policy log` reads. Logging it a second time only gave
+is what `sandbox policy log` reads. Logging it a second time only gave
 the guest a second way to do it, so those lines are debug now. What
 remains in gateway.log is what the gateway itself did, which the guest
 does not control.
@@ -22,7 +22,7 @@ index 810cffe..40449a8 100644
 -				log.Infof("policy: refused dns %s (%s)", q.Name, v.Reason)
 +				// Debug, not Info: the guest decides how many refusals there are, and this
 +				// file has no cap. The refusal is already recorded in the policy audit log,
-+				// which is capped and is what `airlock policy log` reads -- so logging it here
++				// which is capped and is what `sandbox policy log` reads -- so logging it here
 +				// as well only gave a guest a second way to fill the host's disk.
 +				log.Debugf("policy: refused dns %s (%s)", q.Name, v.Reason)
  				// Record it: a name that was never allowed is the commonest
@@ -39,7 +39,7 @@ index 55a3802..f5fc994 100644
 -				log.Infof("policy: refused icmp %s (%s)", ip, v.Reason)
 +				// Debug, not Info: the guest decides how many refusals there are, and this
 +				// file has no cap. The refusal is already recorded in the policy audit log,
-+				// which is capped and is what `airlock policy log` reads -- so logging it here
++				// which is capped and is what `sandbox policy log` reads -- so logging it here
 +				// as well only gave a guest a second way to fill the host's disk.
 +				log.Debugf("policy: refused icmp %s (%s)", ip, v.Reason)
  				return
@@ -78,7 +78,7 @@ index 92e7d83..9b70f68 100644
 -				log.Infof("policy: refused udp %s:%d (%s)", ip, r.ID().LocalPort, v.Reason)
 +				// Debug, not Info: the guest decides how many refusals there are, and this
 +				// file has no cap. The refusal is already recorded in the policy audit log,
-+				// which is capped and is what `airlock policy log` reads -- so logging it here
++				// which is capped and is what `sandbox policy log` reads -- so logging it here
 +				// as well only gave a guest a second way to fill the host's disk.
 +				log.Debugf("policy: refused udp %s:%d (%s)", ip, r.ID().LocalPort, v.Reason)
  				return true

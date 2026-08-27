@@ -1,4 +1,4 @@
-# airlock
+# sandbox
 
 Run coding agents on Apple silicon in sandboxes whose network egress they
 cannot bypass — even as root inside the sandbox.
@@ -7,7 +7,7 @@ cannot bypass — even as root inside the sandbox.
 > against live VMs, not asserted. See [Status](#status).
 
 ```console
-$ airlock run claude          # Claude Code, sandboxed, in the current directory
+$ sandbox run claude          # Claude Code, sandboxed, in the current directory
 ```
 
 ## Why
@@ -23,7 +23,7 @@ options each give something up:
   reach services listening on `0.0.0.0` on the host." Any process that ignores
   the proxy variables walks straight out.
 
-airlock is an open-source enforcement boundary built on
+`sandbox` is an open-source enforcement boundary built on
 **Virtualization.framework**, where you do not own the VMM.
 
 ## How it works
@@ -32,14 +32,14 @@ You do not need to own the VMM. You need to own the wire.
 
 Containerization exposes a public `VZInterface` protocol. Its `NATInterface`
 returns a `VZNATNetworkDeviceAttachment`, which gives the guest a real route to
-the internet. airlock supplies a different conformer that returns
+the internet. `sandbox` supplies a different conformer that returns
 **`VZFileHandleNetworkDeviceAttachment`** — a virtio-net device whose wire is a
-datagram socket held by the airlock process.
+datagram socket held by the sandbox process.
 
 The sandbox is then built with **exactly one network device and nothing else**.
 
 ```
-airlock  ──spawns──>  gvairlock (userspace TCP/IP + policy)
+sandbox  ──spawns──>  gvsandbox (userspace TCP/IP + policy)
    │                       ▲
    │                       │ unixgram: one datagram = one ethernet frame
    └──configures──>  VZVirtualMachine
@@ -81,11 +81,11 @@ on loopback, and the guest gets no say.
 ## What is verified
 
 Against live VMs, by `scripts/acceptance.sh` — 146 cases, nearly all of which
-boot a real sandbox (a few check what airlock refuses before it boots one).
+boot a real sandbox (a few check what sandbox refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
 
-Four more run under `AIRLOCK_AGENT_E2E=1`: they drive Claude Code through a
+Four more run under `SANDBOX_AGENT_E2E=1`: they drive Claude Code through a
 real task and cost API tokens, so they are opt-in rather than skipped by
 default for being awkward.
 
@@ -99,7 +99,7 @@ default for being awkward.
 | **`--privileged`** (`CapEff: 000001ffffffffff`), route replaced | still refused |
 | `exec` into a running sandbox | same policy applies |
 | **container started by dockerd inside the sandbox** | same policy applies |
-| `--secret anthropic` | guest sees `airlock-managed`; real value absent from the guest |
+| `--secret anthropic` | guest sees `sandbox-managed`; real value absent from the guest |
 | `--secret claude` (host OAuth) | `HTTP 200` from the real API; token appears 0 times in the guest |
 | `--clone`, agent deletes `.git` and overwrites files | host tree and history intact |
 | **Vouched CDN address, different SNI** | `deny tcp … sni-denied evil.example.org` |
@@ -109,7 +109,7 @@ default for being awkward.
 | **Guest POSTs to the gateway's forwarder API** | refused; no host port appears, while `-p` still publishes on loopback |
 | DNS over TCP for a denied name | `REFUSED`, while an allowed name resolves |
 | Runtime and state directories | `drwx------`; another account cannot read an agent's console log |
-| **TLS interception scope** | a bound domain verifies against airlock's CA; an unbound one does not, and the CA key never leaves the host |
+| **TLS interception scope** | a bound domain verifies against sandbox's CA; an unbound one does not, and the CA key never leaves the host |
 | Guest forging `Host:` on a brokered request | the request is addressed to the name whose certificate was verified, not the one the guest wrote |
 | Guest reading outside the share (`..`, absolute path, symlink) | all refused; the share is the only thing visible |
 | One sandbox reaching another at the same address | unreachable; control proves the server was up |
@@ -128,7 +128,7 @@ default for being awkward.
 | A guest printing at 635 MB/s | console log bounded at two generations of 32 MiB; newest output kept, and the loss is reported |
 | `prune` while an unnamed run is working | it keeps its network and its rootfs; only what nothing is using is removed |
 | A recorded pid that now belongs to something else | not signalled; its directory still reclaimed |
-| A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service airlock ships no preset for |
+| A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service sandbox ships no preset for |
 | Kit `agentInstructions`, no `--clone` | withheld, and said so; your tree gains no file |
 | The same kit with `--clone` | delivered into the agent's own tree |
 
@@ -136,7 +136,7 @@ The `--privileged` row is the one that matters. With **every Linux capability**,
 root replaced the default route and still could not get out: it could not create
 a second interface, and pointing the route elsewhere only broke its own
 networking. The guarantee rests on there being one device that terminates in the
-airlock process, not on dropping capabilities.
+sandbox process, not on dropping capabilities.
 
 The dockerd row matters for a different reason — a container started *inside* the
 sandbox inherits the policy with nothing extra wired up, because it is behind the
@@ -177,42 +177,51 @@ Being wrong about this is worse than not shipping it.
 - **Filling your disk from inside the sandbox** is bounded, not prevented. What
   the guest drives is capped: its console output, which a shell loop wrote at
   635 MB/s before it was, and the audit log of its refusals. Each holds 32 MiB
-  with one generation kept, and `airlock logs` says when earlier output was
+  with one generation kept, and `sandbox logs` says when earlier output was
   dropped. A sandbox's own writes to its workspace and rootfs are not bounded.
 - **Filesystem access beyond directory granularity.** Virtualization.framework
-  offers no per-file-operation hook, so airlock cannot express "allow
+  offers no per-file-operation hook, so sandbox cannot express "allow
   `~/.ssh/config`, deny `~/.ssh/id_rsa`".
 
 ## Install
 
 Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
 
-Building from source is currently the only way to install. There is no
-published tap or release yet — the Homebrew formula in `packaging/` and the
-release workflow are ready for when there is, and
-[docs/RELEASING.md](docs/RELEASING.md) describes cutting one.
+Building from source is currently the only way to install. Once a release is
+cut it will be installable from a tap:
 
 ```console
-$ git clone <this repo> && cd airlock
+$ brew install satishbabariya/tap/sandbox
+```
+
+The formula in `packaging/` builds from source rather than pouring a bottle:
+the binary has to be codesigned with `com.apple.security.virtualization` on the
+machine it runs on, and a bottle would arrive without a signature macOS
+accepts. [docs/RELEASING.md](docs/RELEASING.md) describes cutting a release.
+
+Until then:
+
+```console
+$ git clone https://github.com/satishbabariya/sandbox && cd sandbox
 $ make install            # builds release, signs it, installs to /usr/local/bin
-$ airlock kernel install  # guest kernel, ~280 MiB download
-$ airlock doctor          # check everything at once
+$ sandbox kernel install  # guest kernel, ~280 MiB download
+$ sandbox doctor          # check everything at once
 ```
 
 Runs that are killed — a timeout, a crash, a machine going to sleep — leave a
 rootfs behind, since nothing gets to clean up after a signal that cannot be
-caught. `airlock doctor` reports how much that is holding and `airlock prune`
+caught. `sandbox doctor` reports how much that is holding and `sandbox prune`
 reclaims it. During development 280 of them had accumulated here, holding 52 GB.
 
-`doctor` also reports what airlock occupies in total, split into the cached
-agent environments — which `airlock agents cache --clear` reclaims — and the
+`doctor` also reports what it occupies in total, split into the cached
+agent environments — which `sandbox agents cache --clear` reclaims — and the
 pulled image layers, which it does not offer to clear: doing so leaves cached
 agents referencing content by a digest that is no longer there, which was
 tested rather than assumed.
 
 `make install` takes `PREFIX` if `/usr/local` is not where you want it, and
 `make uninstall` removes both binaries again. To work from the checkout without
-installing anything, `make build` puts the CLI at `.build/debug/airlock`, which
+installing anything, `make build` puts the CLI at `.build/debug/sandbox`, which
 finds its gateway in the build tree.
 
 `make package VERSION=v0.1.0` builds the archive a release publishes and checks
@@ -224,16 +233,16 @@ rather than about the download.
 The CLI **must** be codesigned with `com.apple.security.virtualization` or
 Virtualization refuses to start the VM. `make build` always signs; a bare
 `swift build` produces a binary that fails at VM start with an opaque error —
-`airlock doctor` catches exactly that.
+`sandbox doctor` catches exactly that.
 
 ## Agents
 
-`airlock run claude` works without you knowing which image, egress rules, or
+`sandbox run claude` works without you knowing which image, egress rules, or
 credential it needs — the agent profile carries all three, and mounts the
 current directory as the workspace.
 
 ```console
-$ airlock agents ls
+$ sandbox agents ls
 NAME      AGENT             IMAGE                                    READY  SOURCE
 claude    Claude Code       docker.io/library/node:22-bookworm-slim  yes    built-in
 codex     OpenAI Codex CLI  docker.io/library/node:22-bookworm-slim  no     built-in
@@ -253,17 +262,17 @@ floor, never a ceiling.
 Override a built-in or add your own:
 
 ```console
-$ airlock agents edit claude   # writes ~/.airlock/agents/claude.json
-$ airlock agents cache         # what is built, and how much disk it uses
+$ sandbox agents edit claude   # writes ~/.sandbox/agents/claude.json
+$ sandbox agents cache         # what is built, and how much disk it uses
 ```
 
 ## MCP servers
 
 ```console
-$ airlock run claude --mcp github --mcp filesystem
+$ sandbox run claude --mcp github --mcp filesystem
 ```
 
-airlock runs MCP servers **inside** the sandbox, not on the host behind a
+sandbox runs MCP servers **inside** the sandbox, not on the host behind a
 gateway. A server reads files and makes network calls on the agent's behalf, so
 running it inside means it is bound by the same egress policy and sees the same
 filesystem the agent does. A host-side server would be a process outside the
@@ -285,7 +294,7 @@ profile.
 
 Substituting a credential means terminating TLS, so the guest is given a CA to
 trust. That CA is used **only for the domains a credential is bound to**:
-asked to verify against airlock's CA alone, `api.anthropic.com` does and
+asked to verify against sandbox's CA alone, `api.anthropic.com` does and
 `example.com` does not — the guest sees the real chain for everything else.
 The private key stays on the host and is never shared into the sandbox.
 
@@ -296,21 +305,21 @@ virtual-hosted endpoint may route by that name.
 
 
 ```console
-$ airlock secret set anthropic          # stored in the macOS Keychain
-$ airlock run claude-image --secret anthropic -- claude
+$ sandbox secret set anthropic          # stored in the macOS Keychain
+$ sandbox run claude-image --secret anthropic -- claude
 ```
 
-Inside the sandbox, `ANTHROPIC_API_KEY` reads `airlock-managed`. The real value
+Inside the sandbox, `ANTHROPIC_API_KEY` reads `sandbox-managed`. The real value
 is substituted on the host, per request, and only for `api.anthropic.com` — so a
 sentinel copied out of the sandbox is worthless.
 
 ### Reusing an OAuth sign-in
 
-If you are already signed in to Claude Code on the host, airlock reuses that
+If you are already signed in to Claude Code on the host, sandbox reuses that
 sign-in without the token entering the sandbox:
 
 ```console
-$ airlock run claude --secret claude
+$ sandbox run claude --secret claude
 ```
 
 The token is read from the host keychain at request time and injected by the
@@ -339,7 +348,7 @@ secrets. The CA is appended to the system bundle rather than replacing it, and
 ## Docker inside the sandbox
 
 ```console
-$ airlock run docker:28-dind --docker --allow '*.docker.io' -- /bin/sh
+$ sandbox run docker:28-dind --docker --allow '*.docker.io' -- /bin/sh
 ```
 
 dockerd gets its own ext4 disk at `/var/lib/docker`. Containers it starts are
@@ -351,50 +360,50 @@ serving nginx, reached from the host through a published port, while a nested
 container is still refused a denied host.
 
 Implies `--privileged`. The guest kernel does not expose the nf_tables netlink
-API, so airlock points iptables at the legacy backend when the nft shim is
+API, so sandbox points iptables at the legacy backend when the nft shim is
 broken — otherwise dockerd cannot create its NAT chain.
 
 ## Usage
 
 ```console
 # Nothing gets out unless you say so
-$ airlock run alpine:3.20 -- /bin/sh -c 'wget example.com'
-airlock: no --allow rules; this sandbox reaches nothing
+$ sandbox run alpine:3.20 -- /bin/sh -c 'wget example.com'
+sandbox: no --allow rules; this sandbox reaches nothing
 
 # Permit specific hosts
-$ airlock run alpine:3.20 --allow '*.anthropic.com' --allow registry.npmjs.org -- /bin/sh
+$ sandbox run alpine:3.20 --allow '*.anthropic.com' --allow registry.npmjs.org -- /bin/sh
 
 # Deny beats allow
-$ airlock run alpine:3.20 --allow '*.github.com' --deny gist.github.com -- /bin/sh
+$ sandbox run alpine:3.20 --allow '*.github.com' --deny gist.github.com -- /bin/sh
 
 # See every decision the gateway made
-$ airlock run alpine:3.20 --allow example.com --show-policy-log -- \
+$ sandbox run alpine:3.20 --allow example.com --show-policy-log -- \
     /bin/sh -c 'wget -q -O/dev/null http://example.com'
 allow tcp 104.20.23.154:80 allow-rule example.com
 
 # Why was that blocked?
-$ airlock policy log my-sandbox --denied
+$ sandbox policy log my-sandbox --denied
 2026-08-26 07:38:15  deny  dns www.iana.org           no-allow-rule
 2026-08-26 06:21:27  deny  tcp 172.66.147.243:443     sni-denied  [blocked.example.net]
 
 # Live view of every sandbox and its decisions
-$ airlock top
+$ sandbox top
 
 # Watch decisions as they happen
-$ airlock policy log my-sandbox --follow
+$ sandbox policy log my-sandbox --follow
 
 # Check a rule without booting anything
-$ airlock policy check evilexample.com --allow '*.example.com'
+$ sandbox policy check evilexample.com --allow '*.example.com'
 deny   evilexample.com  (no allow rule matched)
 ```
 
 ## Long-lived sandboxes
 
 ```console
-$ airlock run claude --name feature-x -d      # detach, print the name
-$ airlock exec feature-x -- git status        # same VM, same policy
-$ airlock cp ./patch.diff feature-x:/workspace/
-$ airlock ls / logs / stop / rm / prune
+$ sandbox run claude --name feature-x -d      # detach, print the name
+$ sandbox exec feature-x -- git status        # same VM, same policy
+$ sandbox cp ./patch.diff feature-x:/workspace/
+$ sandbox ls / logs / stop / rm / prune
 ```
 
 Each detached sandbox is held by its own supervisor process with its own
@@ -403,25 +412,25 @@ gateway — no daemon to manage, and no shared component between sandboxes.
 ## Importing Docker Sandboxes kits
 
 ```console
-$ airlock kit inspect ./aider                  # what it would become
-$ airlock kit inspect ./aider --with ./neovim  # with a mixin layered on
-$ airlock kit import ./aider                   # then: airlock run aider
+$ sandbox kit inspect ./aider                  # what it would become
+$ sandbox kit inspect ./aider --with ./neovim  # with a mixin layered on
+$ sandbox kit import ./aider                   # then: sandbox run aider
 ```
 
 Kits are the extension format `sbx` uses, and there is a body of existing ones.
-airlock reads a faithful subset and **reports what it cannot honour** rather
+`sandbox` reads a faithful subset and **reports what it cannot honour** rather
 than quietly producing a sandbox the kit author did not describe — a dropped
 deny rule would be a weaker sandbox than the one they wrote.
 
 Measured against all 41 kits in `docker/sbx-kits-contrib`: **21 sandbox kits
 translate and all 20 mixins compose onto one**, with no parse errors. Across
 that corpus **4 declarations are reported as unhonoured**, and all four are the
-same thing: an OAuth flow. airlock reuses a sign-in already on the host but
+same thing: an OAuth flow. `sandbox` reuses a sign-in already on the host but
 does not perform the flow itself.
 
-Credentials are taken from what the kit declares, not from a list airlock ships
+Credentials are taken from what the kit declares, not from a list sandbox ships
 — a kit states the environment variable, domain, header and format for each
-one, which is enough to broker a service airlock has never heard of, across as
+one, which is enough to broker a service sandbox has never heard of, across as
 many domains as the credential is valid for.
 
 Everything else translates: `permissions.network`, `credentials` with a
@@ -429,7 +438,7 @@ binding, `environment`, `setup.install`, `setup.files` (written at the declared
 mode), `setup.startup` — including `background: true` commands, which are
 started and left running rather than waited for — and `agentInstructions`.
 
-`agentInstructions` is delivered **only under `--clone`**, and airlock says so
+`agentInstructions` is delivered **only under `--clone`**, and sandbox says so
 when it withholds it. An agent reads its instructions from the working
 directory, which by default is a live share of your own tree: writing there
 would be a kit adding a file to your repository. `--clone` gives the agent a
@@ -442,10 +451,10 @@ base first, and environment and files are keyed with the mixin winning.
 ## Templates
 
 ```console
-$ airlock run shell --name box -d
-$ airlock exec box -- <configure it by hand>
-$ airlock snapshot box my-setup
-$ airlock run shell --template my-setup
+$ sandbox run shell --name box -d
+$ sandbox exec box -- <configure it by hand>
+$ sandbox snapshot box my-setup
+$ sandbox run shell --template my-setup
 ```
 
 An agent environment is reproducible from its profile. A template is the other
@@ -457,10 +466,10 @@ half-written state.
 ## Defaults
 
 ```console
-$ airlock config set defaultAgent claude   # then just: airlock run
-$ airlock config set cpus 8
-$ airlock config set deny internal.example.com
-$ airlock config show
+$ sandbox config set defaultAgent claude   # then just: sandbox run
+$ sandbox config set cpus 8
+$ sandbox config set deny internal.example.com
+$ sandbox config show
 ```
 
 Flags override config, with one deliberate exception: **`deny` is additive and
@@ -486,7 +495,7 @@ An agent rewrites its own configuration. A profile mount marked `:copy` gives
 the guest a private duplicate rather than the host's file:
 
 ```console
-$ airlock run claude --mount ~/.myconfig:/root/.myconfig:copy
+$ sandbox run claude --mount ~/.myconfig:/root/.myconfig:copy
 ```
 
 This is not a convenience. Binding an agent's real config read-write let a
@@ -497,7 +506,7 @@ now use `:copy` for their config.
 ## Protecting your working tree
 
 ```console
-$ airlock run claude --clone
+$ sandbox run claude --clone
 ```
 
 The agent gets a real git clone it can commit to, made from a read-only share
@@ -507,7 +516,7 @@ the work back with `git fetch` when you are happy with it.
 ## Reaching a server the agent started
 
 ```console
-$ airlock run claude -p 3000:3000 --name web -d
+$ sandbox run claude -p 3000:3000 --name web -d
 $ curl http://127.0.0.1:3000
 ```
 
@@ -522,7 +531,7 @@ An exact host (`api.anthropic.com`), a host with a port
 subdomain, and only ever matches on a label boundary — `*.example.com` never
 matches `evilexample.com`.
 
-The matcher is implemented twice: in Swift for `airlock policy check`, and in Go
+The matcher is implemented twice: in Swift for `sandbox policy check`, and in Go
 where enforcement actually happens. Both read
 [`testdata/host-patterns.json`](testdata/host-patterns.json), and
 `make -C netstack check-vectors` fails the build if they drift. A CLI that
@@ -532,10 +541,10 @@ disagreed with the enforcement point would be worse than no CLI.
 
 | Path | What |
 |---|---|
-| `Sources/AirlockKit/Policy` | Pattern matching, deny-wins evaluation |
-| `Sources/AirlockKit/Network` | `GuestLink`, `AirlockInterface`, gateway supervisor |
-| `Sources/AirlockKit/Runtime` | Sandbox lifecycle |
-| `Sources/AirlockKit/Credentials` | Keychain store, bindings, sentinel |
+| `Sources/SandboxKit/Policy` | Pattern matching, deny-wins evaluation |
+| `Sources/SandboxKit/Network` | `GuestLink`, `SandboxInterface`, gateway supervisor |
+| `Sources/SandboxKit/Runtime` | Sandbox lifecycle |
+| `Sources/SandboxKit/Credentials` | Keychain store, bindings, sentinel |
 | `netstack/` | Pinned upstream SHA + our patches. Upstream is not vendored, so the entire security-relevant diff is reviewable in one directory |
 
 ## Status
@@ -553,7 +562,7 @@ provisioned files and startup commands (including background daemons).
 **Not yet:** dynamic filesystem approval (`VZHotplugProvider`),
 host-side MCP gateway parity with sbx (a deliberate
 divergence — see above), OAuth flows beyond a host sign-in already present
-(airlock reuses one but does not perform the sign-in itself), kit `extends`
+(sandbox reuses one but does not perform the sign-in itself), kit `extends`
 chains, a TUI, x86 emulation.
 
 **Known limitation, unverified:** whether revoking a shared directory closes

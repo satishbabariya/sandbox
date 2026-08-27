@@ -13,7 +13,7 @@ concurrency:
 jobs:
   swift:
     name: Swift build and test
-    # Apple silicon: airlock targets Virtualization.framework on arm64 and
+    # Apple silicon: sandbox targets Virtualization.framework on arm64 and
     # will not build on the Intel runners. The runner must also be macOS 26 --
     # Package.swift declares that as its minimum, so an older image cannot
     # build this at all.
@@ -34,7 +34,7 @@ jobs:
 
       # The gateway binary, which one Swift test boots for real to check it
       # answers DHCP over the same socket the VM's NIC is bound to. Without it
-      # that test reports "gvairlock not built" and fails the job.
+      # that test reports "gvsandbox not built" and fails the job.
       #
       # Building rather than `make -C netstack test`: the test target runs the
       # Go suites, which the gateway job already does, and never produces the

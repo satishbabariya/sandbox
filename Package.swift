@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "airlock",
+    name: "sandbox",
     platforms: [.macOS("26.0")],
     products: [
-        .library(name: "AirlockKit", targets: ["AirlockKit"]),
-        .executable(name: "airlock", targets: ["airlock"]),
+        .library(name: "SandboxKit", targets: ["SandboxKit"]),
+        .executable(name: "sandbox", targets: ["sandbox"]),
     ],
     dependencies: [
         // .package(path: "../containerization"),
@@ -19,7 +19,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "AirlockKit",
+            name: "SandboxKit",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
@@ -33,17 +33,17 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "airlock",
+            name: "sandbox",
             dependencies: [
-                "AirlockKit",
+                "SandboxKit",
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
         .testTarget(
-            name: "AirlockKitTests",
-            dependencies: ["AirlockKit"]
+            name: "SandboxKitTests",
+            dependencies: ["SandboxKit"]
         ),
     ]
 )
