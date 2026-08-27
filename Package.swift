@@ -9,7 +9,8 @@ let package = Package(
         .executable(name: "airlock", targets: ["airlock"]),
     ],
     dependencies: [
-        .package(path: "../containerization"),
+        // .package(path: "../containerization"),
+        .package(url: "https://github.com/apple/containerization.git", from: "0.41.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.10.1"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
