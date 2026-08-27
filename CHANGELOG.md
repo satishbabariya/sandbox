@@ -6,12 +6,17 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-08-27
+
 ### Fixed
 
 - The published checksum file named the path it was built at (`dist/…`) rather
   than the archive, so `shasum -a 256 -c` failed for anyone who downloaded both.
   The hash itself was correct; the file was unusable for the one thing it is
   for.
+- The release workflow did not build the gateway before running the tests, so
+  one test that boots the real gateway failed and no release could be published.
+  CI had the same fault and had been fixed; the release workflow had not.
 
 ## [0.1.0] — 2026-08-27
 
@@ -71,5 +76,6 @@ egress they cannot bypass.
 
 Full detail, including everything that is verified and how, is in the README.
 
-[Unreleased]: https://github.com/satishbabariya/sandbox/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/satishbabariya/sandbox/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/satishbabariya/sandbox/releases/tag/v0.1.1
 [0.1.0]: https://github.com/satishbabariya/sandbox/releases/tag/v0.1.0

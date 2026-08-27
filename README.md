@@ -187,19 +187,32 @@ Being wrong about this is worse than not shipping it.
 
 Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
 
-Building from source is currently the only way to install. Once a release is
-cut it will be installable from a tap:
+From a [release](https://github.com/satishbabariya/sandbox/releases):
+
+```console
+$ gh release download v0.1.0 --repo satishbabariya/sandbox
+$ shasum -a 256 -c sandbox-v0.1.0-darwin-arm64.tar.gz.sha256
+$ tar -xzf sandbox-v0.1.0-darwin-arm64.tar.gz
+$ sudo cp sandbox-*/bin/* /usr/local/bin/
+$ sandbox kernel install   # guest kernel, ~280 MiB, once
+$ sandbox doctor           # checks everything at once
+```
+
+macOS quarantines anything downloaded through a browser, which strips the
+codesignature the VM needs. `sandbox doctor` reports exactly that; clear it with
+`xattr -d com.apple.quarantine /usr/local/bin/sandbox`.
+
+Or with Homebrew:
 
 ```console
 $ brew install satishbabariya/tap/sandbox
 ```
 
-The formula in `packaging/` builds from source rather than pouring a bottle:
-the binary has to be codesigned with `com.apple.security.virtualization` on the
-machine it runs on, and a bottle would arrive without a signature macOS
-accepts. [docs/RELEASING.md](docs/RELEASING.md) describes cutting a release.
+The formula builds from source rather than pouring a bottle: the binary has to
+be codesigned with `com.apple.security.virtualization` on the machine it runs
+on, and a bottle would arrive without a signature macOS accepts.
 
-Until then:
+From source:
 
 ```console
 $ git clone https://github.com/satishbabariya/sandbox && cd sandbox
