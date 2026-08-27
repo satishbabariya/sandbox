@@ -214,9 +214,18 @@ struct DoctorCommand: AsyncParsableCommand {
         func human(_ bytes: Int64) -> String {
             ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         }
-        let detail =
-            "\(human(total)) total — \(human(caches)) agent environments, "
-            + "\(human(images)) images"
+        // A fresh install holds nothing, and saying so three times over reads
+        // as a fault rather than as the expected state.
+        guard total > 0 else { return .ok("nothing yet") }
+
+        var detail = "\(human(total)) total"
+        // Only name the parts that have something in them.
+        let parts = [(caches, "agent environments"), (images, "images")]
+            .filter { $0.0 > 0 }
+            .map { "\(human($0.0)) \($0.1)" }
+        if !parts.isEmpty {
+            detail += " — " + parts.joined(separator: ", ")
+        }
 
         // Only worth raising when it is large enough to matter to someone.
         if caches > 20 * 1_073_741_824 {
