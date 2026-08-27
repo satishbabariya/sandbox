@@ -170,6 +170,10 @@ Being wrong about this is worse than not shipping it.
   process has this property whatever the runtime; `--clone` avoids it by giving
   the agent a tree that is not yours.
 - **Side channels** — timing, or data encoded in DNS names within an allowed zone.
+- **Host sockets**, one per connection the guest holds open — measured 1:1, which
+  is what any forwarding proxy does. Bounded by the process descriptor limit and
+  by what the allowed host will accept; exhausting it costs that sandbox its own
+  networking rather than the host's.
 - **Filling your disk from inside the sandbox** is bounded, not prevented. What
   the guest drives is capped: its console output, which a shell loop wrote at
   635 MB/s before it was, and the audit log of its refusals. Each holds 32 MiB
