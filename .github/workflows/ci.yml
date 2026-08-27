@@ -26,6 +26,11 @@ jobs:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
+          # There is no go.sum here to key a cache on: the Go tree is fetched
+          # at the pinned SHA into netstack/.work during the build. Left on,
+          # the action warns that it cannot find one, which reads as a fault
+          # rather than as a repository that has no Go module of its own.
+          cache: false
 
       # The gateway binary, which one Swift test boots for real to check it
       # answers DHCP over the same socket the VM's NIC is bound to. Without it
@@ -75,6 +80,11 @@ jobs:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
+          # There is no go.sum here to key a cache on: the Go tree is fetched
+          # at the pinned SHA into netstack/.work during the build. Left on,
+          # the action warns that it cannot find one, which reads as a fault
+          # rather than as a repository that has no Go module of its own.
+          cache: false
 
       # Builds gvisor-tap-vsock at the pinned SHA with our patches, then runs
       # the policy, broker, DNS, and forwarder suites. Also fails if the Swift
@@ -92,6 +102,11 @@ jobs:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
+          # There is no go.sum here to key a cache on: the Go tree is fetched
+          # at the pinned SHA into netstack/.work during the build. Left on,
+          # the action warns that it cannot find one, which reads as a fault
+          # rather than as a repository that has no Go module of its own.
+          cache: false
       - name: Swift and Go matchers must agree
         run: make -C netstack check-vectors
 
