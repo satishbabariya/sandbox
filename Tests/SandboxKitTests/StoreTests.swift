@@ -848,3 +848,68 @@ struct KitCompositionTests {
         }
     }
 }
+
+/// A rule in a config file has been wrong since somebody wrote it, not since
+/// the command that happened to read it. Saying which file is the difference
+/// between fixing it and re-reading the command line.
+@Suite("SandboxConfig validation")
+struct SandboxConfigValidationTests {
+    private func temporaryRoot() -> SandboxPaths {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "sandbox-config-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return SandboxPaths(root: root)
+    }
+
+    private func write(_ json: String, to paths: SandboxPaths) throws {
+        try json.write(
+            to: SandboxConfig.path(paths), atomically: true, encoding: .utf8)
+    }
+
+    @Test("a pattern that could never match is refused, naming the file")
+    func unmatchablePatternNamesTheFile() throws {
+        let paths = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try write(#"{"allow":["example.com, github.com"],"deny":[]}"#, to: paths)
+
+        do {
+            _ = try SandboxConfig.load(paths)
+            Issue.record("expected a bad pattern to be refused")
+        } catch {
+            let message = String(describing: error)
+            #expect(message.contains("config.json"), "should name the file: \(message)")
+            #expect(message.contains("example.com, github.com"))
+        }
+    }
+
+    /// The same applies to deny, where silently dropping a rule is worse: the
+    /// user believes something is blocked that is not.
+    @Test("a bad deny rule is refused too")
+    func badDenyIsRefused() throws {
+        let paths = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try write(#"{"allow":[],"deny":["under_score.com"]}"#, to: paths)
+
+        #expect(throws: (any Error).self) { _ = try SandboxConfig.load(paths) }
+    }
+
+    @Test("a config that is fine still loads")
+    func goodConfigLoads() throws {
+        let paths = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try write(#"{"allow":["example.com","*.github.com"],"deny":["evil.com"]}"#, to: paths)
+
+        let config = try SandboxConfig.load(paths)
+        #expect(config.allow == ["example.com", "*.github.com"])
+        #expect(config.deny == ["evil.com"])
+    }
+
+    /// No config at all is the ordinary case, not a failure.
+    @Test("an absent config is not an error")
+    func absentConfigIsFine() throws {
+        let paths = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        let config = try SandboxConfig.load(paths)
+        #expect(config.allow.isEmpty)
+    }
+}

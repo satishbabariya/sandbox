@@ -107,9 +107,14 @@ public struct HostPattern: Sendable, Hashable {
                 // Naming the character is the difference between a message a
                 // user can act on and one they have to guess at.
                 let offender = label.first { !($0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-")) }
+                // Deliberately does not name --allow: the same patterns come
+                // from config.json and from an imported kit, and telling
+                // someone to fix a flag they did not use sends them looking in
+                // the wrong place. "one host per rule" holds wherever it came
+                // from.
                 throw bad(
                     "'\(offender.map(String.init) ?? "?")' is not valid in a hostname; "
-                        + "pass one --allow per host")
+                        + "a rule names one host")
             }
             guard !label.hasPrefix("-"), !label.hasSuffix("-") else {
                 throw bad("a label cannot begin or end with '-'")

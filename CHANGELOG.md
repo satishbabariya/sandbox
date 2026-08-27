@@ -12,6 +12,12 @@ Notable changes to sandbox. Dates are the release date; the format follows
   "example.com, github.com"` produced a sandbox that reached neither host and
   said nothing about why. Patterns are now checked against what a hostname can
   contain, and the error names the offending character.
+- A config file was rejected as "not valid JSON" when it simply predated a
+  field, so adding one would have broken every config already on disk. Every
+  key is optional now.
+- A bad rule in `config.json` reported the pattern without saying which file it
+  came from, sending the reader to the command they had just typed rather than
+  to a file that had been wrong since they wrote it.
 
 ## [0.1.1] — 2026-08-27
 
