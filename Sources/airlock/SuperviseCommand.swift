@@ -33,10 +33,10 @@ struct SuperviseCommand: AsyncParsableCommand {
 
         // A detached sandbox has no terminal to write to, so its streams go to
         // a file the user can read back later.
+        // Bounded: the guest decides how much it prints, and a shell loop
+        // fills a disk from in here at hundreds of megabytes a second.
         let logPath = logDirectory.appending(path: "console.log")
-        FileManager.default.createFile(atPath: logPath.path, contents: nil)
-        let logHandle = try FileHandle(forWritingTo: logPath)
-        let writer = StreamWriter(logHandle)
+        let writer = try RotatingFileWriter(path: logPath)
 
         let sandbox = Sandbox(
             spec: try launch.sandboxSpec(stdout: writer, stderr: writer),

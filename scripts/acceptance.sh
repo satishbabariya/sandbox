@@ -158,6 +158,32 @@ check "the symlink is a plain write into the workspace" "outside.txt" \
   "$(readlink "$FSW/inside/escape" 2>&1)"
 rm -rf "$FSW"
 
+echo "== a guest cannot fill the host with its own output =="
+
+# A detached sandbox has no terminal, so everything it prints lands in a file
+# on the host, and the guest decides how much. Measured at 635 MB/s from a
+# shell loop: 9.6GB in fifteen seconds, and it does not take a compromised
+# agent -- a program stuck printing in a retry loop does it by accident.
+$B rm floodcase --force >/dev/null 2>&1
+$B run "$IMAGE" --name floodcase --detach --no-tty -- \
+  /bin/sh -c 'yes "filling the host console" ; sleep 5' >/dev/null 2>&1
+sleep 12
+FLOOD_DIR=/tmp/airlock-floodcase
+flood_mb=$(du -sm "$FLOOD_DIR" 2>/dev/null | cut -f1)
+# Two generations of a 32 MiB cap, plus the sandbox's other small files.
+check "the console log is bounded" "yes" \
+  "$([ "${flood_mb:-9999}" -lt 200 ] && echo yes || echo no)"
+
+# Bounded is only useful if recent output is the part that survives. Read a
+# line from the end rather than the very last one, which is whatever the guest
+# was mid-way through writing when it stopped.
+check "and holds the newest output" "filling the host console" \
+  "$($B logs floodcase 2>/dev/null | tail -5 | head -1)"
+# Silently dropping output would make a truncated log look complete.
+check "and says earlier output was dropped" "earlier output was dropped" \
+  "$($B logs floodcase 2>&1 >/dev/null)"
+$B rm floodcase --force >/dev/null 2>&1
+
 echo "== a build can be interrupted =="
 
 # Building an agent runs a VM for as long as its install steps take, which is

@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 143 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 146 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -125,6 +125,7 @@ default for being awkward.
 | Five sandboxes started at once | all completed; no leftover gateway or supervisor |
 | Ctrl-C during an agent build | stops, exits 130, leaves no gateway and no half-built rootfs |
 | A run killed mid-flight | its rootfs is reclaimable: `prune` reports what it freed, `doctor` warns first |
+| A guest printing at 635 MB/s | console log bounded at two generations of 32 MiB; newest output kept, and the loss is reported |
 | `prune` while an unnamed run is working | it keeps its network and its rootfs; only what nothing is using is removed |
 | A recorded pid that now belongs to something else | not signalled; its directory still reclaimed |
 | A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service airlock ships no preset for |
@@ -169,11 +170,11 @@ Being wrong about this is worse than not shipping it.
   process has this property whatever the runtime; `--clone` avoids it by giving
   the agent a tree that is not yours.
 - **Side channels** — timing, or data encoded in DNS names within an allowed zone.
-- **Filling your disk from inside the sandbox** is bounded, not prevented. Every
-  refusal is an audit line, and the guest decides how many there are, so the log
-  is capped at 32 MiB with one generation kept and the gateway does not log
-  refusals a second time. A sandbox's own writes to its workspace and rootfs are
-  not bounded.
+- **Filling your disk from inside the sandbox** is bounded, not prevented. What
+  the guest drives is capped: its console output, which a shell loop wrote at
+  635 MB/s before it was, and the audit log of its refusals. Each holds 32 MiB
+  with one generation kept, and `airlock logs` says when earlier output was
+  dropped. A sandbox's own writes to its workspace and rootfs are not bounded.
 - **Filesystem access beyond directory granularity.** Virtualization.framework
   offers no per-file-operation hook, so airlock cannot express "allow
   `~/.ssh/config`, deny `~/.ssh/id_rsa`".
