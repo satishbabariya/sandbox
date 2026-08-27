@@ -18,6 +18,11 @@ Notable changes to sandbox. Dates are the release date; the format follows
 - A bad rule in `config.json` reported the pattern without saying which file it
   came from, sending the reader to the command they had just typed rather than
   to a file that had been wrong since they wrote it.
+- A sandbox record missing a field added in a later version was dropped in
+  silence, so a sandbox that was still running disappeared from `ls` while its
+  VM held memory, and `stop` answered with a decoding error. Records now decode
+  with defaults, and one that genuinely cannot be read is reported by name
+  rather than ignored.
 
 ## [0.1.1] — 2026-08-27
 
