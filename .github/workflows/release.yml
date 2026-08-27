@@ -96,14 +96,29 @@ jobs:
             ```console
             $ tar -xzf airlock-${{ steps.version.outputs.value }}-darwin-arm64.tar.gz
             $ sudo cp airlock-*/bin/* /usr/local/bin/
-            $ airlock doctor
+            $ airlock kernel install   # guest kernel, ~280 MiB, once
+            $ airlock doctor           # checks everything at once
+            ```
+
+            Then:
+
+            ```console
+            $ airlock run shell --allow example.com
             ```
 
             Requires Apple silicon and macOS 26.
 
-            The binary is signed ad-hoc with `com.apple.security.virtualization`.
-            macOS may quarantine it on first download; clear that with
+            The binary is signed ad-hoc with `com.apple.security.virtualization`,
+            without which Virtualization refuses to start a VM at all. macOS
+            quarantines anything downloaded through a browser, which strips it —
+            `airlock doctor` reports exactly that, and it is cleared with
             `xattr -d com.apple.quarantine /usr/local/bin/airlock`.
 
-            Run `airlock doctor` before anything else — it checks the
-            entitlement, the guest kernel, and the gateway in one go.
+            ## What changed
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.version.outputs.value }}/CHANGELOG.md).
+
+            ## What this does and does not protect against
+
+            The README is explicit about both, and the list of what it does not
+            cover is worth reading before trusting it with anything.

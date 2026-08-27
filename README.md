@@ -189,7 +189,8 @@ Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
 
 Building from source is currently the only way to install. There is no
 published tap or release yet — the Homebrew formula in `packaging/` and the
-release workflow are ready for when there is.
+release workflow are ready for when there is, and
+[docs/RELEASING.md](docs/RELEASING.md) describes cutting one.
 
 ```console
 $ git clone <this repo> && cd airlock
