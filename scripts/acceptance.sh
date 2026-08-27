@@ -190,7 +190,48 @@ check "and it exits like an interrupted command" "130" "$?"
 sleep 2
 check "leaving no gateway behind" "yes" \
   "$([ "$(count_gateways)" -le "$SLOW_GW" ] && echo yes || echo no)"
+# exit() does not unwind, so the cleanup that runs on a normal exit does not.
+# A half-built rootfs is hundreds of MB and nothing else would remove it.
+check_absent "and no half-built rootfs" "acceptslow" \
+  "$(ls "$HOME/.airlock/images/containers/" 2>/dev/null || true)"
 rm -f "$AGENTS_DIR/acceptslow.json"
+
+echo "== abandoned state can be reclaimed =="
+
+# A run that exits normally clears its own directories. One that is killed --
+# a timeout, a crash, a machine going to sleep -- does not, and nothing
+# reclaimed those: 280 had accumulated during development, holding 52GB.
+STALE="$HOME/.airlock/images/containers/acceptance-stale-probe"
+mkdir -p "$STALE"
+head -c 200000 /dev/zero >"$STALE/rootfs.ext4" 2>/dev/null
+# Older than the margin prune uses to decide nobody is coming back for it.
+touch -t 202001010000 "$STALE" 2>/dev/null
+
+check "doctor notices it" "abandoned director" "$($B doctor 2>&1)"
+out=$($B prune 2>&1)
+check "prune reclaims it and says how much" "abandoned director" "$out"
+check_absent "and it is gone" "acceptance-stale-probe" \
+  "$(ls "$HOME/.airlock/images/containers/" 2>/dev/null || true)"
+
+# The dangerous half: an ephemeral run keeps no record, so age is the only
+# thing separating one in flight from one abandoned.
+INFLIGHT_LOG=$(mktemp)
+$B run "$IMAGE" --no-tty -- /bin/sh -c 'sleep 20; echo SURVIVED_A_PRUNE' >"$INFLIGHT_LOG" 2>&1 &
+INFLIGHT=$!
+sleep 5
+$B prune >/dev/null 2>&1
+wait "$INFLIGHT" 2>/dev/null
+check "a run in flight survives a concurrent prune" "SURVIVED_A_PRUNE" \
+  "$(cat "$INFLIGHT_LOG" 2>&1)"
+rm -f "$INFLIGHT_LOG"
+
+# The sweep matched on the name prefix alone, so it deleted any file in /tmp
+# called airlock-something -- including one of this suite's own logs.
+echo keep-me >/tmp/airlock-not-a-sandbox.log
+$B prune >/dev/null 2>&1
+check "an unrelated file in /tmp is left alone" "keep-me" \
+  "$(cat /tmp/airlock-not-a-sandbox.log 2>&1)"
+rm -f /tmp/airlock-not-a-sandbox.log
 
 echo "== a secret that cannot be read says so instead of waiting =="
 

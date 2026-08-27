@@ -345,6 +345,21 @@ struct PruneCommand: AsyncParsableCommand {
             print("removed \(orphans.count) orphaned runtime director\(orphans.count == 1 ? "y" : "ies")")
             removed += orphans.count
         }
+        // Rootfs and runtime directories left by runs that were killed. These
+        // are the ones that actually cost disk: a rootfs is hundreds of MB.
+        let abandoned = Self.abandonedStateDirectories(store: store, paths: paths)
+        var reclaimed: Int64 = 0
+        for directory in abandoned {
+            reclaimed += Self.directorySize(directory)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        if !abandoned.isEmpty {
+            print(
+                "removed \(abandoned.count) abandoned director\(abandoned.count == 1 ? "y" : "ies")"
+                    + ", reclaiming \(ByteCountFormatter.string(fromByteCount: reclaimed, countStyle: .file))")
+            removed += abandoned.count
+        }
+
         // Anything whose directory was already gone before this ran, and so
         // could never have been found through a pid file.
         for stray in StrayProcess.all() where ProcessLiveness.isAlive(stray.pid) {
@@ -363,6 +378,26 @@ struct PruneCommand: AsyncParsableCommand {
         }
 
         if removed == 0 { print("nothing to prune") }
+    }
+
+    /// Disk actually occupied by a directory tree.
+    ///
+    /// Allocated size rather than apparent: a rootfs is a sparse 8GB file
+    /// holding a few hundred MB, and reporting the apparent size would claim to
+    /// have reclaimed storage that was never used.
+    static func directorySize(_ url: URL) -> Int64 {
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: url, includingPropertiesForKeys: [.totalFileAllocatedSizeKey])
+        else { return 0 }
+        var total: Int64 = 0
+        for case let file as URL in enumerator {
+            let size =
+                (try? file.resourceValues(forKeys: [.totalFileAllocatedSizeKey])
+                    .totalFileAllocatedSize) ?? 0
+            total += Int64(size)
+        }
+        return total
     }
 
     /// Stop the process whose pid a runtime directory records, if it is alive.
@@ -393,8 +428,48 @@ struct PruneCommand: AsyncParsableCommand {
         return entries.filter { url in
             let name = url.lastPathComponent
             guard name.hasPrefix("airlock-") else { return false }
+            // Directories only. A sandbox's runtime state is a directory, and
+            // matching on the prefix alone made this delete any file someone
+            // had named airlock-something in /tmp -- which it has no business
+            // touching, and which cost a log file during testing.
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                isDirectory.boolValue
+            else { return false }
             return !known.contains(String(name.dropFirst("airlock-".count)))
         }
+    }
+
+    /// Rootfs and runtime directories under the state directory that no sandbox
+    /// owns any more.
+    ///
+    /// A run that exits normally clears its own. One that is killed -- a
+    /// timeout, a crash, a machine going to sleep -- does not, and nothing ever
+    /// reclaimed those: 280 of them had accumulated here, holding 52GB, with no
+    /// command that would remove one.
+    ///
+    /// An ephemeral run deliberately keeps no record, so a record is not enough
+    /// to tell an abandoned directory from one in use. Age settles it: a run in
+    /// flight is minutes old at most, and an hour is a generous margin before
+    /// deciding nobody is coming back for it.
+    static func abandonedStateDirectories(
+        store: SandboxStore, paths: AirlockPaths, olderThan age: TimeInterval = 3600
+    ) -> [URL] {
+        let known = Set(store.list().map(\.name))
+        let cutoff = Date().addingTimeInterval(-age)
+        var found: [URL] = []
+        for parent in [paths.runtimeRoot, paths.containerRootParent] {
+            let entries =
+                (try? FileManager.default.contentsOfDirectory(
+                    at: parent, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+            for url in entries where !known.contains(url.lastPathComponent) {
+                let modified =
+                    (try? url.resourceValues(forKeys: [.contentModificationDateKey])
+                        .contentModificationDate) ?? Date.distantPast
+                if modified < cutoff { found.append(url) }
+            }
+        }
+        return found
     }
 }
 

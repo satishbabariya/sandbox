@@ -74,8 +74,12 @@ struct DoctorCommand: AsyncParsableCommand {
         // A directory is untidy; a process is a VM still holding memory, so it
         // is worth naming separately even though one command clears both.
         let strays = StrayProcess.all()
+        // The ones that actually cost the user something: a rootfs left by a
+        // run that was killed is hundreds of MB, and they accumulate silently.
+        let abandoned = PruneCommand.abandonedStateDirectories(
+            store: SandboxStore(paths: paths), paths: paths)
 
-        if orphans.isEmpty, strays.isEmpty { return .ok("none") }
+        if orphans.isEmpty, strays.isEmpty, abandoned.isEmpty { return .ok("none") }
 
         var parts: [String] = []
         if !orphans.isEmpty {
@@ -89,6 +93,12 @@ struct DoctorCommand: AsyncParsableCommand {
                     ? "\(strays.count) stray process\(strays.count == 1 ? "" : "es") "
                         + "(\(vms) still holding a VM)"
                     : "\(strays.count) stray process\(strays.count == 1 ? "" : "es")")
+        }
+        if !abandoned.isEmpty {
+            let bytes = abandoned.reduce(Int64(0)) { $0 + PruneCommand.directorySize($1) }
+            parts.append(
+                "\(abandoned.count) abandoned director\(abandoned.count == 1 ? "y" : "ies") "
+                    + "holding \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))")
         }
         return .warn(parts.joined(separator: ", "), fix: "airlock prune")
     }

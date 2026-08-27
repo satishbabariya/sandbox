@@ -190,12 +190,17 @@ public struct AirlockPaths: Sendable {
 
     public var kernel: URL { root.appending(path: "vmlinux-arm64") }
     public var images: URL { root.appending(path: "images") }
-    public func runtime(_ id: String) -> URL { root.appending(path: "run/\(id)") }
+    public func runtime(_ id: String) -> URL { runtimeRoot.appending(path: id) }
+
+    /// The directories every sandbox's state hangs off, so a sweep can find
+    /// what no sandbox owns any more.
+    public var runtimeRoot: URL { root.appending(path: "run") }
+    public var containerRootParent: URL { images.appending(path: "containers") }
 
     /// Where ContainerManager unpacks a sandbox's rootfs. Removing a sandbox
     /// has to clear this too, or the name cannot be reused.
     public func containerRoot(_ id: String) -> URL {
-        images.appending(path: "containers/\(id)")
+        containerRootParent.appending(path: id)
     }
 
     /// Everything a single sandbox owns on disk.

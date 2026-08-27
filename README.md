@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 130 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 136 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -122,7 +122,9 @@ default for being awkward.
 | Kit-declared file containing `$HOME` and a backtick | written verbatim at the declared mode |
 | Kit-declared `background: true` command | daemon still serving when the agent runs |
 | Five sandboxes started at once | all completed; no leftover gateway or supervisor |
-| Ctrl-C during an agent build | stops, exits 130, leaves no gateway |
+| Ctrl-C during an agent build | stops, exits 130, leaves no gateway and no half-built rootfs |
+| A run killed mid-flight | its rootfs is reclaimable: `prune` reports what it freed, `doctor` warns first |
+| `prune` while a run is in flight | the run finishes; only directories nothing is using are removed |
 | A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service airlock ships no preset for |
 | Kit `agentInstructions`, no `--clone` | withheld, and said so; your tree gains no file |
 | The same kit with `--clone` | delivered into the agent's own tree |
@@ -183,6 +185,11 @@ $ make install            # builds release, signs it, installs to /usr/local/bin
 $ airlock kernel install  # guest kernel, ~280 MiB download
 $ airlock doctor          # check everything at once
 ```
+
+Runs that are killed — a timeout, a crash, a machine going to sleep — leave a
+rootfs behind, since nothing gets to clean up after a signal that cannot be
+caught. `airlock doctor` reports how much that is holding and `airlock prune`
+reclaims it. During development 280 of them had accumulated here, holding 52 GB.
 
 `make install` takes `PREFIX` if `/usr/local` is not where you want it, and
 `make uninstall` removes both binaries again. To work from the checkout without

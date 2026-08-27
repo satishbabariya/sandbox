@@ -86,9 +86,22 @@ public actor AgentPreparer {
         // which is minutes. Until this was armed, Ctrl-C during that did
         // nothing at all -- the run ignored SIGINT, and a SIGTERM that did
         // land left the build's gateway running with no sandbox to serve.
+        let buildDirectories = paths.allDirectories(buildID)
+        // Stopping the sandbox makes wait() return a failed status, so without
+        // knowing an interrupt caused it the build reports itself as a failed
+        // install and exits 1 -- and which of the two happens first is a race,
+        // so the exit code differed between runs of the same interrupt.
+        let wasInterrupted = InterruptFlag()
         let interrupted = SignalTrap {
+            wasInterrupted.set()
             Task {
                 await sandbox.stop()
+                // exit() does not unwind, so the defer below that removes the
+                // half-built rootfs never runs. Left alone, every interrupted
+                // build keeps a few hundred MB of a rootfs nobody will finish.
+                for directory in buildDirectories {
+                    try? FileManager.default.removeItem(at: directory)
+                }
                 Darwin.exit(130)  // 128 + SIGINT, what a shell reports for Ctrl-C.
             }
         }
@@ -98,6 +111,15 @@ public actor AgentPreparer {
         try await sandbox.start(gatewayBinary: gatewayBinary)
         let status = try await sandbox.wait()
         await sandbox.stop()
+
+        // Whichever path gets here first, an interrupted build exits the way an
+        // interrupted command does rather than as a broken one.
+        if wasInterrupted.isSet {
+            for directory in buildDirectories {
+                try? FileManager.default.removeItem(at: directory)
+            }
+            Darwin.exit(130)
+        }
 
         let builtRootfs = paths.containerRoot(buildID).appending(path: "rootfs.ext4")
         defer { try? FileManager.default.removeItem(at: paths.containerRoot(buildID)) }
