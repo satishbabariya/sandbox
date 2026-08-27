@@ -117,3 +117,82 @@ struct HostPatternMatchingTests {
         #expect(p.matches(host: "api.anthropic.com.", port: 443))
     }
 }
+
+/// A pattern that parses and then matches nothing is the worst outcome for a
+/// tool whose job is deciding what is reachable: the sandbox reaches neither
+/// what you asked for nor anything else, and says nothing about why.
+@Suite("HostPattern rejects the unmatchable")
+struct HostPatternUnmatchableTests {
+    /// The mistake a user actually makes. Before this was rejected,
+    /// `--allow "example.com, github.com"` reached neither host in silence.
+    @Test("a comma-separated list is refused, not accepted as one host")
+    func commaSeparatedList() {
+        #expect(throws: PolicyError.self) { try HostPattern("example.com, github.com") }
+    }
+
+    @Test("characters that cannot appear in a hostname are refused")
+    func invalidCharacters() throws {
+        for raw in ["exa mple.com", "exam,ple.com", "under_score.com", "ex!ample.com"] {
+            #expect(throws: PolicyError.self, "should reject \(raw)") {
+                try HostPattern(raw)
+            }
+        }
+        // The message has to name the character, or the user is left guessing
+        // which one of a long pattern is at fault.
+        do {
+            _ = try HostPattern("exam,ple.com")
+        } catch {
+            #expect(String(describing: error).contains(","))
+        }
+    }
+
+    @Test("an empty label is refused")
+    func emptyLabels() {
+        for raw in ["example..com", ".example.com"] {
+            #expect(throws: PolicyError.self, "should reject \(raw)") {
+                try HostPattern(raw)
+            }
+        }
+    }
+
+    @Test("a label cannot begin or end with a hyphen")
+    func hyphenBoundaries() {
+        for raw in ["-example.com", "example-.com", "sub.-example.com"] {
+            #expect(throws: PolicyError.self, "should reject \(raw)") {
+                try HostPattern(raw)
+            }
+        }
+    }
+
+    /// The half that matters more: tightening validation must not refuse
+    /// anything that legitimately worked.
+    @Test("everything a user might legitimately write still parses")
+    func legitimatePatternsSurvive() throws {
+        for raw in [
+            "example.com",
+            "*.example.com",
+            "api.anthropic.com",
+            "registry-1.docker.io",  // hyphens inside a label
+            "sub.domain.example.co.uk",
+            "example.com:443",
+            "*.example.com:8080",
+            "localhost",
+            "127.0.0.1",
+            "example.com.",  // trailing root label
+            "xn--80ak6aa92e.com",  // punycode
+            "3com.com",  // a label may start with a digit
+        ] {
+            _ = try HostPattern(raw)
+        }
+    }
+
+    /// An IPv6 literal is an address, not a hostname, and has its own alphabet.
+    /// Checking hostname characters against one rejected it -- including with a
+    /// port, where the closing bracket has already been split away.
+    @Test("bracketed IPv6 literals are addresses, not hostnames")
+    func ipv6Literals() throws {
+        for raw in ["[::1]", "[2001:db8::1]", "[::1]:8080"] {
+            _ = try HostPattern(raw)
+        }
+    }
+}

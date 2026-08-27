@@ -83,6 +83,39 @@ public struct HostPattern: Sendable, Hashable {
         }
         guard !hostPart.isEmpty else { throw bad("missing host") }
 
+        // A bracketed IPv6 literal is an address, not a hostname, and has its
+        // own alphabet. Tested on the prefix alone: with a port attached the
+        // parser above splits at the last colon, which leaves the closing
+        // bracket behind and made "[::1]:8080" -- which parsed before this
+        // check existed -- fail on its own opening bracket.
+        let isIPv6Literal = hostPart.hasPrefix("[")
+
+        // A hostname's labels are letters, digits and hyphens. Anything else
+        // produces a rule that parses and then never matches anything, which
+        // for a tool whose job is deciding what is reachable is the worst
+        // outcome: `--allow "example.com, github.com"` reached neither host and
+        // said nothing about why.
+        for label in isIPv6Literal
+            ? []
+            : Self.normalize(hostPart).split(separator: ".", omittingEmptySubsequences: false)
+        {
+            guard !label.isEmpty else {
+                throw bad("a label is empty; check for a doubled or leading dot")
+            }
+            guard label.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") })
+            else {
+                // Naming the character is the difference between a message a
+                // user can act on and one they have to guess at.
+                let offender = label.first { !($0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-")) }
+                throw bad(
+                    "'\(offender.map(String.init) ?? "?")' is not valid in a hostname; "
+                        + "pass one --allow per host")
+            }
+            guard !label.hasPrefix("-"), !label.hasSuffix("-") else {
+                throw bad("a label cannot begin or end with '-'")
+            }
+        }
+
         self.raw = trimmed
         self.host = Self.normalize(hostPart)
         self.port = portPart
