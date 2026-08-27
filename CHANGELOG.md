@@ -6,6 +6,13 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A pattern that could never match anything was accepted in silence. `--allow
+  "example.com, github.com"` produced a sandbox that reached neither host and
+  said nothing about why. Patterns are now checked against what a hostname can
+  contain, and the error names the offending character.
+
 ## [0.1.1] — 2026-08-27
 
 ### Fixed
