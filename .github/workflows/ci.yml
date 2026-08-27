@@ -27,6 +27,12 @@ jobs:
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
 
+      # Builds gvisor-tap-vsock at the pinned SHA with our patches, then runs
+      # the policy, broker, DNS, and forwarder suites. Also fails if the Swift
+      # and Go policy matchers have drifted apart.
+      - name: Apply patches and test
+        run: make -C netstack test
+      
       # Selecting the newest installed Xcode rather than pinning a path, which
       # the runner images move between releases.
       - name: Select Xcode
