@@ -6,6 +6,13 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The published checksum file named the path it was built at (`dist/…`) rather
+  than the archive, so `shasum -a 256 -c` failed for anyone who downloaded both.
+  The hash itself was correct; the file was unusable for the one thing it is
+  for.
+
 ## [0.1.0] — 2026-08-27
 
 First release. Runs coding agents in Apple Virtualization VMs whose network
