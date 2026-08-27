@@ -15,7 +15,9 @@ same PR. Overclaiming is worse than not shipping.
 
 ## Getting set up
 
-Requires Apple silicon, macOS 26, Xcode 26, and Go 1.21+.
+Requires Apple silicon, macOS 26, Xcode 26, and Go 1.25.6+ — the pinned
+gvisor-tap-vsock revision declares that in its `go.mod`, so anything older
+cannot build the gateway at all.
 
 ```console
 $ make build            # CLI + gateway, signed with the entitlement
@@ -34,7 +36,7 @@ skipped the Makefile.
 |---|---|
 | `Sources/SandboxKit/Policy` | Pattern matching, deny-wins evaluation |
 | `Sources/SandboxKit/Network` | `GuestLink`, `SandboxInterface`, gateway supervisor |
-| `Sources/SandboxKit/Runtime` | Sandbox lifecycle, store, control protocol |
+| `Sources/SandboxKit/Runtime` | Sandbox lifecycle, store, control protocol, and `GuestBootstrap` — the wrappers that build the command a guest runs |
 | `Sources/SandboxKit/Agents` | Agent profiles, rootfs cache |
 | `Sources/SandboxKit/Credentials` | Keychain, bindings, sentinel |
 | `netstack/` | Pinned upstream SHA + our patches |

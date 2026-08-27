@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/satishbabariya/sandbox/security/advisories/new
+    about: >-
+      A way out of a sandbox, a recoverable brokered secret, or host access
+      beyond what was shared in. Please report privately rather than opening an
+      issue — see SECURITY.md for what is in and out of scope.
