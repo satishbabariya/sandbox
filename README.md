@@ -543,7 +543,7 @@ disagreed with the enforcement point would be worse than no CLI.
 |---|---|
 | `Sources/SandboxKit/Policy` | Pattern matching, deny-wins evaluation |
 | `Sources/SandboxKit/Network` | `GuestLink`, `SandboxInterface`, gateway supervisor |
-| `Sources/SandboxKit/Runtime` | Sandbox lifecycle |
+| `Sources/SandboxKit/Runtime` | Sandbox lifecycle, and `GuestBootstrap` — the wrappers that build the command a guest actually runs |
 | `Sources/SandboxKit/Credentials` | Keychain store, bindings, sentinel |
 | `netstack/` | Pinned upstream SHA + our patches. Upstream is not vendored, so the entire security-relevant diff is reviewable in one directory |
 
