@@ -196,6 +196,18 @@ check_absent "and no half-built rootfs" "acceptslow" \
   "$(ls "$HOME/.airlock/images/containers/" 2>/dev/null || true)"
 rm -f "$AGENTS_DIR/acceptslow.json"
 
+echo "== airlock says what it is holding =="
+
+# Cached agent environments and pulled image layers grow without bound, and
+# only one of them can be reclaimed: clearing the image content store leaves
+# cached agents referencing digests that are no longer there, which was
+# verified rather than assumed. So the figure is reported instead of a command
+# being offered that would break things.
+out=$($B doctor 2>&1)
+check "the footprint is reported" "airlock is holding" "$out"
+check "broken into what can be cleared" "agent environments" "$out"
+check "and what cannot" "images" "$out"
+
 echo "== abandoned state can be reclaimed =="
 
 # A run that exits normally clears its own directories. One that is killed --

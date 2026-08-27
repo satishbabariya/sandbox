@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 136 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 139 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -190,6 +190,12 @@ Runs that are killed — a timeout, a crash, a machine going to sleep — leave 
 rootfs behind, since nothing gets to clean up after a signal that cannot be
 caught. `airlock doctor` reports how much that is holding and `airlock prune`
 reclaims it. During development 280 of them had accumulated here, holding 52 GB.
+
+`doctor` also reports what airlock occupies in total, split into the cached
+agent environments — which `airlock agents cache --clear` reclaims — and the
+pulled image layers, which it does not offer to clear: doing so leaves cached
+agents referencing content by a digest that is no longer there, which was
+tested rather than assumed.
 
 `make install` takes `PREFIX` if `/usr/local` is not where you want it, and
 `make uninstall` removes both binaries again. To work from the checkout without

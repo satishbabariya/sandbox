@@ -32,6 +32,7 @@ struct DoctorCommand: AsyncParsableCommand {
         results.append(("gateway binary", checkGateway()))
         results.append(("state directory", checkStateDirectory(paths)))
         results.append(("disk space", checkDiskSpace(paths)))
+        results.append(("airlock is holding", checkFootprint(paths)))
         results.append(("stray state", checkOrphans(paths)))
 
         var failures = 0
@@ -197,6 +198,33 @@ struct DoctorCommand: AsyncParsableCommand {
 
     /// Agent environments are hundreds of megabytes each, and running out of
     /// space mid-install produces a confusing failure.
+    /// What airlock itself occupies, broken down.
+    ///
+    /// Cached agent environments are the bulk of it and are the one part a user
+    /// can safely reclaim. The pulled image layers cannot be: clearing them
+    /// leaves cached agents referencing content by a digest that is no longer
+    /// there, which was verified rather than assumed -- so this reports the
+    /// figure and points at the part that can actually be cleared.
+    private func checkFootprint(_ paths: AirlockPaths) -> Status {
+        func size(_ url: URL) -> Int64 { PruneCommand.directorySize(url) }
+        let caches = size(paths.root.appending(path: "cache"))
+        let images = size(paths.images)
+        let total = size(paths.root)
+
+        func human(_ bytes: Int64) -> String {
+            ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        let detail =
+            "\(human(total)) total — \(human(caches)) agent environments, "
+            + "\(human(images)) images"
+
+        // Only worth raising when it is large enough to matter to someone.
+        if caches > 20 * 1_073_741_824 {
+            return .warn(detail, fix: "airlock agents cache --clear")
+        }
+        return .ok(detail)
+    }
+
     private func checkDiskSpace(_ paths: AirlockPaths) -> Status {
         guard
             let values = try? paths.root.resourceValues(forKeys: [

@@ -382,7 +382,15 @@ struct RunCommand: AsyncParsableCommand {
             // mistyped agent name surfaces as whatever the registry said about
             // an image nobody meant to pull -- an HTTP 401 for `airlock run
             // clade`. Say what was actually looked for.
-            if profile == nil, let target = self.target ?? config.defaultAgent {
+            // Only when the target reads like a name someone meant to be an
+            // agent. `alpine:3.20` is unambiguously an image reference, and
+            // blaming the agent list for a failure to start it misdirects:
+            // with a damaged local image store this reported "not a known
+            // agent" about a perfectly good reference.
+            if profile == nil, let target = self.target ?? config.defaultAgent,
+                !target.contains("/"), !target.contains(":"), !target.contains("@"),
+                !target.contains(".")
+            {
                 let names = registry.all().map(\.name).sorted()
                 throw CleanExit.message(
                     """
