@@ -39,6 +39,31 @@ public struct SandboxRecord: Codable, Sendable, Equatable {
         self.privileged = privileged
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case name, image, createdAt, supervisorPID, allow, deny, workspace, privileged
+    }
+
+    /// Only the name and image are required.
+    ///
+    /// A record is written once and read by every later version of the tool,
+    /// so a field added later must not invalidate one already on disk. With
+    /// the synthesised decoder it did, and silently: the store drops a record
+    /// it cannot decode, so a sandbox that was still running vanished from
+    /// `ls` while its VM kept holding memory, and `stop` answered with a raw
+    /// DecodingError. Nothing in the tool could reach it again.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try c.decode(String.self, forKey: .name),
+            image: try c.decode(String.self, forKey: .image),
+            createdAt: try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(),
+            supervisorPID: try c.decodeIfPresent(Int32.self, forKey: .supervisorPID),
+            allow: try c.decodeIfPresent([String].self, forKey: .allow) ?? [],
+            deny: try c.decodeIfPresent([String].self, forKey: .deny) ?? [],
+            workspace: try c.decodeIfPresent(String.self, forKey: .workspace),
+            privileged: try c.decodeIfPresent(Bool.self, forKey: .privileged) ?? false)
+    }
+
     /// A record is only "running" if its supervisor is still alive. Checking
     /// the process rather than trusting the file means a crashed supervisor
     /// shows as stopped instead of as a sandbox you cannot reach.
@@ -152,7 +177,20 @@ public struct SandboxStore: Sendable {
             .filter { $0.pathExtension == "json" }
             .compactMap { url -> SandboxRecord? in
                 guard let data = try? Data(contentsOf: url) else { return nil }
-                return try? decoder.decode(SandboxRecord.self, from: data)
+                do {
+                    return try decoder.decode(SandboxRecord.self, from: data)
+                } catch {
+                    // A record that cannot be read may still have a VM behind
+                    // it. Dropping it in silence is how a running sandbox
+                    // disappears from `ls` while holding memory, so say so --
+                    // listing the rest is still better than refusing to list
+                    // anything.
+                    FileHandle.standardError.write(
+                        Data(
+                            ("sandbox: ignoring unreadable record "
+                                + "\(url.lastPathComponent): \(error)\n").utf8))
+                    return nil
+                }
             }
             .sorted { $0.createdAt > $1.createdAt }
     }

@@ -913,3 +913,60 @@ struct SandboxConfigValidationTests {
         #expect(config.allow.isEmpty)
     }
 }
+
+/// A record is written once and read by every later version of the tool. With
+/// the synthesised decoder, adding a field invalidated every record already on
+/// disk -- and the store drops what it cannot decode, so a sandbox that was
+/// still running vanished from `ls` while its VM kept holding memory.
+@Suite("SandboxRecord forward compatibility")
+struct SandboxRecordCompatibilityTests {
+    private func decode(_ json: String) throws -> SandboxRecord {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(SandboxRecord.self, from: Data(json.utf8))
+    }
+
+    @Test("a record missing fields added later still decodes")
+    func missingLaterFields() throws {
+        // What a record looked like before `privileged` and `deny` existed.
+        let record = try decode(
+            #"{"name":"old","image":"alpine:3.20","createdAt":"2026-01-01T00:00:00Z"}"#)
+        #expect(record.name == "old")
+        #expect(record.image == "alpine:3.20")
+        // Absent means the safe value, not a failure.
+        #expect(record.privileged == false)
+        #expect(record.deny.isEmpty)
+    }
+
+    /// Name and image identify the sandbox; without them there is nothing to
+    /// act on, so those are the only two that are required.
+    @Test("a record without a name or image is refused")
+    func identityIsRequired() {
+        #expect(throws: (any Error).self) { try decode(#"{"image":"alpine"}"#) }
+        #expect(throws: (any Error).self) { try decode(#"{"name":"x"}"#) }
+    }
+
+    @Test("a full record round-trips unchanged")
+    func roundTrip() throws {
+        let original = SandboxRecord(
+            name: "full", image: "alpine:3.20", supervisorPID: 4242,
+            allow: ["example.com"], deny: ["evil.com"],
+            workspace: "/tmp/work", privileged: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoded = try decode(String(decoding: try encoder.encode(original), as: UTF8.self))
+
+        // Compared field by field rather than by equality: ISO8601 carries
+        // whole seconds, so a Date survives the trip only to the precision the
+        // format has, and asserting on the whole value tests the encoding
+        // rather than the record.
+        #expect(decoded.name == original.name)
+        #expect(decoded.image == original.image)
+        #expect(decoded.supervisorPID == original.supervisorPID)
+        #expect(decoded.allow == original.allow)
+        #expect(decoded.deny == original.deny)
+        #expect(decoded.workspace == original.workspace)
+        #expect(decoded.privileged == original.privileged)
+        #expect(abs(decoded.createdAt.timeIntervalSince(original.createdAt)) < 1)
+    }
+}

@@ -549,11 +549,20 @@ struct PortsCommand: AsyncParsableCommand {
         let paths = SandboxPaths()
         _ = try SandboxStore(paths: paths).load(name)
         let specPath = paths.socketDirectory(name).appending(path: "launch.json")
-        guard let data = try? Data(contentsOf: specPath),
-            let launch = try? JSONDecoder().decode(LaunchSpec.self, from: data)
-        else {
+        guard let data = try? Data(contentsOf: specPath) else {
             print("no published ports recorded for \(name)")
             return
+        }
+        let launch: LaunchSpec
+        do {
+            launch = try JSONDecoder().decode(LaunchSpec.self, from: data)
+        } catch {
+            // A spec written by a different version of the tool may not decode.
+            // Saying "no published ports" would be a claim about the sandbox
+            // rather than about this file, and the sandbox may well have some.
+            print("cannot read the launch spec for '\(name)': \(error)")
+            print("the sandbox is unaffected; this only reports its published ports")
+            throw ExitCode(1)
         }
         guard !launch.ports.isEmpty else {
             print("no published ports")
