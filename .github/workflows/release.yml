@@ -38,6 +38,9 @@ jobs:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
+          # No go.sum here to key a cache on; the Go tree is fetched at the
+          # pinned SHA during the build.
+          cache: false
 
       # The version baked into the binary must match the tag, or `airlock
       # --version` lies about what a user is running.
