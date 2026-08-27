@@ -39,6 +39,29 @@ public struct SandboxConfig: Codable, Sendable, Equatable {
         self.secrets = secrets
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case defaultAgent, cpus, memory, allow, deny, clone, secrets
+    }
+
+    /// Decoded field by field with defaults, so every key is optional.
+    ///
+    /// Two reasons. A config written by hand should only have to state what it
+    /// changes rather than every key. And a config written by an older sandbox
+    /// must keep loading after a field is added -- with the synthesised
+    /// decoder, adding `secrets` made every config predating it fail as
+    /// "not valid JSON", which is both alarming and untrue.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            defaultAgent: try c.decodeIfPresent(String.self, forKey: .defaultAgent),
+            cpus: try c.decodeIfPresent(Int.self, forKey: .cpus),
+            memory: try c.decodeIfPresent(String.self, forKey: .memory),
+            allow: try c.decodeIfPresent([String].self, forKey: .allow) ?? [],
+            deny: try c.decodeIfPresent([String].self, forKey: .deny) ?? [],
+            clone: try c.decodeIfPresent(Bool.self, forKey: .clone),
+            secrets: try c.decodeIfPresent([String].self, forKey: .secrets) ?? [])
+    }
+
     public static func path(_ paths: SandboxPaths = SandboxPaths()) -> URL {
         paths.root.appending(path: "config.json")
     }
@@ -50,11 +73,18 @@ public struct SandboxConfig: Codable, Sendable, Equatable {
     public static func load(_ paths: SandboxPaths = SandboxPaths()) throws -> SandboxConfig {
         let url = path(paths)
         guard let data = try? Data(contentsOf: url) else { return SandboxConfig() }
+        let config: SandboxConfig
         do {
-            return try JSONDecoder().decode(SandboxConfig.self, from: data)
+            config = try JSONDecoder().decode(SandboxConfig.self, from: data)
         } catch {
             throw ConfigError.malformed(url, underlying: "\(error)")
         }
+        // Checked here rather than left to fail when the policy is assembled.
+        // Both refuse to run, but only this one can say which file is wrong --
+        // and a rule in a config has been wrong since someone wrote it, not
+        // since the command they just typed.
+        try config.validate(from: url)
+        return config
     }
 
     public func save(_ paths: SandboxPaths = SandboxPaths()) throws {
@@ -66,9 +96,19 @@ public struct SandboxConfig: Codable, Sendable, Equatable {
 
     /// Validate before anything is written, so a typo cannot land in a file
     /// that every later run has to read.
-    public func validate() throws {
+    public func validate(from source: URL? = nil) throws {
         for pattern in allow + deny {
-            _ = try HostPattern(pattern)
+            do {
+                _ = try HostPattern(pattern)
+            } catch {
+                // Say which file, when there is one. A rule read from
+                // config.json fails exactly like one typed on the command line,
+                // and without the path a user goes looking at the command they
+                // just ran rather than at the file that has been wrong for
+                // weeks.
+                guard let source else { throw error }
+                throw ConfigError.invalid("\(source.path): \(error)")
+            }
         }
         if let cpus, cpus < 1 {
             throw ConfigError.invalid("cpus must be at least 1")
