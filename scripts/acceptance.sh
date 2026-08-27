@@ -260,6 +260,25 @@ check "a live sandbox keeps its rootfs however old it looks" "yes" \
   "$([ -e "$HOME/.airlock/images/containers/$LIVE_ID" ] && echo yes || echo no)"
 wait "$STORAGE_PID" 2>/dev/null
 
+# A pid file outlives the process it names and pids are reused, so a stale one
+# eventually points at whatever now holds that number. Deciding on liveness
+# alone would send it a SIGTERM meant for a gateway that exited hours ago.
+/bin/sleep 90 &
+DECOY_PID=$!
+sleep 1
+mkdir -p /tmp/airlock-recycled-pid
+echo "$DECOY_PID" >/tmp/airlock-recycled-pid/gateway.pid
+$B prune >/dev/null 2>&1
+sleep 1
+check "an unrelated process holding a recorded pid is not signalled" "yes" \
+  "$(kill -0 "$DECOY_PID" 2>/dev/null && echo yes || echo no)"
+# ...and its directory is still reclaimed, or a recycled pid would protect
+# garbage for as long as that process happened to live.
+check_absent "while its directory is still reclaimed" "airlock-recycled-pid" \
+  "$(ls -d /tmp/airlock-recycled-pid 2>/dev/null || true)"
+kill "$DECOY_PID" 2>/dev/null || true
+rm -rf /tmp/airlock-recycled-pid
+
 # The sweep matched on the name prefix alone, so it deleted any file in /tmp
 # called airlock-something -- including one of this suite's own logs.
 echo keep-me >/tmp/airlock-not-a-sandbox.log

@@ -85,3 +85,34 @@ extension StrayProcess {
         return StrayProcess(pid: pid, kind: kind, directory: String(command[range]))
     }
 }
+
+extension StrayProcess {
+    /// Whether a pid currently belongs to one of airlock's own processes.
+    ///
+    /// A pid file outlives the process it names, and pids are reused. Checking
+    /// only that *something* answers to the number means a recycled pid gets a
+    /// SIGTERM meant for a gateway that exited hours ago -- and the something
+    /// could be anything the user is running. Asking what the process actually
+    /// is costs one ps and removes the whole class of mistake.
+    public static func isOurs(pid: Int32, executable: (Int32) -> String? = commandName) -> Bool {
+        guard pid > 0, let name = executable(pid) else { return false }
+        return name == "airlock" || name == "gvairlock"
+    }
+
+    /// The executable name of a running process, or nil if it is gone.
+    public static func commandName(pid: Int32) -> String? {
+        let listing = Process()
+        listing.executableURL = URL(filePath: "/bin/ps")
+        listing.arguments = ["-p", "\(pid)", "-o", "comm="]
+        let pipe = Pipe()
+        listing.standardOutput = pipe
+        listing.standardError = FileHandle.nullDevice
+        guard (try? listing.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        listing.waitUntilExit()
+        let text = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        return URL(filePath: text).lastPathComponent
+    }
+}

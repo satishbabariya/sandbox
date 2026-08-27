@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import AirlockKit
@@ -66,5 +67,42 @@ struct StrayProcessTests {
         let strays = StrayProcess.parse(listing).filter { $0.directory != "/tmp/airlock-live" }
         #expect(strays.count == 1)
         #expect(strays.first?.directory == "/tmp/airlock-dead")
+    }
+}
+
+/// A pid file outlives the process it names and pids are reused, so deciding to
+/// signal one on liveness alone eventually sends a SIGTERM meant for a gateway
+/// to whatever now holds that number.
+@Suite("process identity")
+struct ProcessIdentityTests {
+    @Test("our own processes are recognised")
+    func ours() {
+        #expect(StrayProcess.isOurs(pid: 1234) { _ in "airlock" })
+        #expect(StrayProcess.isOurs(pid: 1234) { _ in "gvairlock" })
+        // A full path is what ps reports for some processes.
+        #expect(StrayProcess.isOurs(pid: 1234) { _ in "/usr/local/bin/gvairlock" } == false)
+    }
+
+    /// The case that matters: the number is live, and it is not ours.
+    @Test("anything else is left alone")
+    func notOurs() {
+        for name in ["sleep", "zsh", "node", "Finder", "airlockd", "my-airlock"] {
+            #expect(!StrayProcess.isOurs(pid: 1234) { _ in name }, "should not match \(name)")
+        }
+    }
+
+    @Test("a pid that no longer exists is not ours")
+    func gone() {
+        #expect(!StrayProcess.isOurs(pid: 1234) { _ in nil })
+        #expect(!StrayProcess.isOurs(pid: 0) { _ in "airlock" })
+        #expect(!StrayProcess.isOurs(pid: -1) { _ in "airlock" })
+    }
+
+    /// This process is airlock's test runner, not airlock.
+    @Test("the real lookup answers for a live process")
+    func realLookup() {
+        let mine = ProcessInfo.processInfo.processIdentifier
+        #expect(StrayProcess.commandName(pid: mine) != nil)
+        #expect(StrayProcess.commandName(pid: 999_999) == nil)
     }
 }

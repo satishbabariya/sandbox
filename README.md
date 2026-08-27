@@ -80,7 +80,7 @@ on loopback, and the guest gets no say.
 
 ## What is verified
 
-Against live VMs, by `scripts/acceptance.sh` — 141 cases, nearly all of which
+Against live VMs, by `scripts/acceptance.sh` — 143 cases, nearly all of which
 boot a real sandbox (a few check what airlock refuses before it boots one).
 Each security claim carries a control, so a case cannot pass because the thing
 it was testing never ran.
@@ -125,6 +125,7 @@ default for being awkward.
 | Ctrl-C during an agent build | stops, exits 130, leaves no gateway and no half-built rootfs |
 | A run killed mid-flight | its rootfs is reclaimable: `prune` reports what it freed, `doctor` warns first |
 | `prune` while an unnamed run is working | it keeps its network and its rootfs; only what nothing is using is removed |
+| A recorded pid that now belongs to something else | not signalled; its directory still reclaimed |
 | A kit imported and run | multi-line install step, declared file, startup command, and a credential for a service airlock ships no preset for |
 | Kit `agentInstructions`, no `--clone` | withheld, and said so; your tree gains no file |
 | The same kit with `--clone` | delivered into the agent's own tree |

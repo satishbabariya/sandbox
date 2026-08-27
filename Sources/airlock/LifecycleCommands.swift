@@ -411,10 +411,11 @@ struct PruneCommand: AsyncParsableCommand {
             pid > 0
         else { return false }
 
-        // A pid is only meaningful while the process is alive; sending to a
-        // recycled one would kill something unrelated. kill(0) reports whether
-        // it exists and is ours without touching it.
-        guard kill(pid, 0) == 0 else { return false }
+        // A pid file outlives the process it names, and pids are reused, so
+        // "something answers to this number" is not enough to signal it.
+        // kill(0) only reports existence and permission -- what makes it safe
+        // is checking the process is one of ours.
+        guard kill(pid, 0) == 0, StrayProcess.isOurs(pid: pid) else { return false }
         return kill(pid, SIGTERM) == 0
     }
 
@@ -513,7 +514,10 @@ struct PruneCommand: AsyncParsableCommand {
                 contentsOf: runtime.appending(path: "gateway.pid"), encoding: .utf8),
             let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return false }
-        return ProcessLiveness.isAlive(pid)
+        // Identity as well as liveness. A pid file outlives its process and
+        // pids are reused, so a stale one pointing at whatever now holds that
+        // number would otherwise protect a directory nothing is using.
+        return ProcessLiveness.isAlive(pid) && StrayProcess.isOurs(pid: pid)
     }
 }
 
