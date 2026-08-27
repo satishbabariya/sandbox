@@ -6,7 +6,7 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-08-27
 
 First release. Runs coding agents in Apple Virtualization VMs whose network
 egress they cannot bypass.
