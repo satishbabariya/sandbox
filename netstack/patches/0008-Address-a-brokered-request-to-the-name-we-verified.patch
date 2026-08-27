@@ -98,7 +98,7 @@ index 781c86f..33a20e1 100644
 +		ServerName: "127.0.0.1", RootCAs: guestPool,
 +	})
 +	req, _ := http.NewRequest("GET", "https://127.0.0.1/v1/messages", nil)
-+	req.Header.Set("x-api-key", "airlock-managed")
++	req.Header.Set("x-api-key", "sandbox-managed")
 +	// The guest addresses the request somewhere else entirely.
 +	req.Host = "evil.example.org"
 +	if err := req.Write(client); err != nil {

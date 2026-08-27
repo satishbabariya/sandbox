@@ -25,7 +25,7 @@ types.Configuration.Policy opts in, so the existing -config flag carries it.
 A malformed rule fails startup rather than being ignored.
 
 Matching semantics are pinned by testdata/host-patterns.json, shared
-verbatim with the Swift implementation that renders airlock policy check.
+verbatim with the Swift implementation that renders sandbox policy check.
 ---
  pkg/policy/engine.go                   | 285 +++++++++++++++++++++++++
  pkg/policy/pattern.go                  | 120 +++++++++++
@@ -341,7 +341,7 @@ index 0000000..81c2ad4
 --- /dev/null
 +++ b/pkg/policy/pattern.go
 @@ -0,0 +1,120 @@
-+// Package policy implements airlock's default-deny egress policy for the
++// Package policy implements sandbox's default-deny egress policy for the
 +// virtual network stack.
 +//
 +// This is the authoritative enforcement point. The guest has exactly one
@@ -363,7 +363,7 @@ index 0000000..81c2ad4
 +// (*.githubusercontent.com).
 +//
 +// The matching semantics here MUST agree exactly with the Swift implementation
-+// in AirlockKit. Both are exercised against testdata/host-patterns.json.
++// in SandboxKit. Both are exercised against testdata/host-patterns.json.
 +type Pattern struct {
 +	// Host is lowercased. For a wildcard it is the suffix with the leading
 +	// "*." removed, so "*.example.com" stores "example.com".
@@ -511,8 +511,8 @@ index 0000000..8441275
 +	return v
 +}
 +
-+// TestSharedVectors is the conformance gate. AirlockKit's Swift matcher reads
-+// the identical file; if these two ever disagree, `airlock policy check` lies
++// TestSharedVectors is the conformance gate. SandboxKit's Swift matcher reads
++// the identical file; if these two ever disagree, `sandbox policy check` lies
 +// about what the enforcement point will actually do.
 +func TestSharedVectors(t *testing.T) {
 +	v := loadVectors(t)
@@ -713,8 +713,8 @@ index 0000000..ada0650
 +{
 +  "_comment": [
 +    "Shared conformance vectors for the host-pattern matcher.",
-+    "Two implementations must agree exactly: the Swift one in AirlockKit (advisory,",
-+    "powers `airlock policy check`) and the Go one in the netstack fork (authoritative,",
++    "Two implementations must agree exactly: the Swift one in SandboxKit (advisory,",
++    "powers `sandbox policy check`) and the Go one in the netstack fork (authoritative,",
 +    "actually refuses the connection). A disagreement between them is a silent",
 +    "correctness bug, so both test suites read this file.",
 +    "Add a case here first, then make both sides pass it."

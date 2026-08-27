@@ -20,8 +20,8 @@ Run the acceptance suite too. It boots real VMs, so CI cannot:
 
 ```console
 $ make acceptance                       # ~10 minutes
-$ AIRLOCK_ALL_AGENTS=1 make acceptance  # also builds every built-in agent
-$ AIRLOCK_AGENT_E2E=1 make acceptance   # also drives a real Claude Code session
+$ SANDBOX_ALL_AGENTS=1 make acceptance  # also builds every built-in agent
+$ SANDBOX_AGENT_E2E=1 make acceptance   # also drives a real Claude Code session
 ```
 
 Update `CHANGELOG.md`: move `[Unreleased]` items under the new version and date
@@ -36,14 +36,27 @@ $ git push origin v0.1.0
 
 The workflow then:
 
-1. stamps `Sources/AirlockKit/Version.swift` so `airlock --version` matches the
+1. stamps `Sources/SandboxKit/Version.swift` so `sandbox --version` matches the
    tag rather than lying about what someone is running,
 2. runs the unit tests and the Go suites,
 3. builds and verifies the archive with `make package`,
-4. stamps `packaging/airlock.rb` with the tag's source tarball and its sha256 —
+4. stamps `packaging/sandbox.rb` with the tag's source tarball and its sha256 —
    the source tarball, because a poured bottle would arrive without the
    codesigned entitlement, so Homebrew has to build from source,
 5. publishes the archive, its checksum, and the formula.
+
+## The tap
+
+The formula is published as a release asset with its url and sha256 already
+stamped. Copy that file into the tap rather than editing one by hand, so the
+checksum is the one that was actually built:
+
+```console
+$ gh release download v0.1.0 --pattern sandbox.rb --dir /path/to/homebrew-tap/Formula
+$ cd /path/to/homebrew-tap && git commit -am "sandbox 0.1.0" && git push
+```
+
+Then `brew install satishbabariya/tap/sandbox` works.
 
 ## After
 
@@ -51,20 +64,20 @@ Check the published archive the way a user would, rather than trusting the
 workflow said so:
 
 ```console
-$ tar -xzf airlock-v0.1.0-darwin-arm64.tar.gz
-$ ./airlock-v0.1.0-darwin-arm64/bin/airlock --version
-$ ./airlock-v0.1.0-darwin-arm64/bin/airlock doctor
+$ tar -xzf sandbox-v0.1.0-darwin-arm64.tar.gz
+$ ./sandbox-v0.1.0-darwin-arm64/bin/sandbox --version
+$ ./sandbox-v0.1.0-darwin-arm64/bin/sandbox doctor
 ```
 
-macOS quarantines anything downloaded through a browser. `airlock doctor` will
+macOS quarantines anything downloaded through a browser. `sandbox doctor` will
 report the entitlement as missing when that has happened; clear it with:
 
 ```console
-$ xattr -d com.apple.quarantine /usr/local/bin/airlock
+$ xattr -d com.apple.quarantine /usr/local/bin/sandbox
 ```
 
 ## Version numbers
 
-`Sources/AirlockKit/Version.swift` holds `0.0.1-dev` in the repository and is
+`Sources/SandboxKit/Version.swift` holds `0.0.1-dev` in the repository and is
 stamped at release time. It is deliberately not the tag: a checkout is not a
 release, and a binary built from one should not claim to be.

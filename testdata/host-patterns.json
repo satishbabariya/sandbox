@@ -1,8 +1,8 @@
 {
   "_comment": [
     "Shared conformance vectors for the host-pattern matcher.",
-    "Two implementations must agree exactly: the Swift one in AirlockKit (advisory,",
-    "powers `airlock policy check`) and the Go one in the netstack fork (authoritative,",
+    "Two implementations must agree exactly: the Swift one in SandboxKit (advisory,",
+    "powers `sandbox policy check`) and the Go one in the netstack fork (authoritative,",
     "actually refuses the connection). A disagreement between them is a silent",
     "correctness bug, so both test suites read this file.",
     "Add a case here first, then make both sides pass it."

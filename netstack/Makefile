@@ -1,4 +1,4 @@
-# Builds gvairlock: gvisor-tap-vsock at a pinned commit, plus airlock's
+# Builds gvsandbox: gvisor-tap-vsock at a pinned commit, plus sandbox's
 # egress-policy patches.
 #
 # The upstream tree is not vendored into this repo. It is fetched at the SHA in
@@ -9,7 +9,7 @@
 UPSTREAM_REPO ?= https://github.com/containers/gvisor-tap-vsock.git
 UPSTREAM_SHA  := $(shell cat UPSTREAM)
 WORK          ?= .work
-BIN           ?= ../.build/bin/gvairlock
+BIN           ?= ../.build/bin/gvsandbox
 
 .PHONY: all
 all: $(BIN)
@@ -35,7 +35,7 @@ $(WORK)/.patched: $(WORK)/.fetched $(wildcard patches/*.patch)
 	@touch $@
 
 # The Swift and Go matchers must agree exactly; the Swift side powers
-# `airlock policy check` while the Go side actually refuses the connection.
+# `sandbox policy check` while the Go side actually refuses the connection.
 # Drift between them would make the CLI lie about what happens at runtime.
 .PHONY: check-vectors
 check-vectors: $(WORK)/.patched
@@ -46,7 +46,7 @@ check-vectors: $(WORK)/.patched
 
 $(BIN): $(WORK)/.patched check-vectors
 	@mkdir -p $(dir $(BIN))
-	@echo "building gvairlock"
+	@echo "building gvsandbox"
 	@cd $(WORK) && GOFLAGS=-mod=vendor CGO_ENABLED=0 go build -o $(CURDIR)/$(BIN) ./cmd/gvproxy
 	@echo "built $(BIN)"
 
