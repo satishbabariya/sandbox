@@ -19,19 +19,23 @@ jobs:
     # build this at all.
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
           go-version: ">=1.25.6"
 
-      # Builds gvisor-tap-vsock at the pinned SHA with our patches, then runs
-      # the policy, broker, DNS, and forwarder suites. Also fails if the Swift
-      # and Go policy matchers have drifted apart.
-      - name: Apply patches and test
-        run: make -C netstack test
+      # The gateway binary, which one Swift test boots for real to check it
+      # answers DHCP over the same socket the VM's NIC is bound to. Without it
+      # that test reports "gvairlock not built" and fails the job.
+      #
+      # Building rather than `make -C netstack test`: the test target runs the
+      # Go suites, which the gateway job already does, and never produces the
+      # binary -- so the Swift test kept failing while the step passed.
+      - name: Build the gateway
+        run: make -C netstack
       
       # Selecting the newest installed Xcode rather than pinning a path, which
       # the runner images move between releases.
@@ -64,9 +68,9 @@ jobs:
     name: Gateway build and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
@@ -82,8 +86,8 @@ jobs:
     name: Policy matcher conformance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
@@ -95,6 +99,6 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: shellcheck scripts/*.sh

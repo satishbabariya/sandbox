@@ -17,7 +17,7 @@ jobs:
     name: Build and publish
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve version
         id: version
@@ -33,7 +33,7 @@ jobs:
           latest=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
           if [ -n "$latest" ]; then sudo xcode-select -s "$latest"; fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # The pinned gvisor-tap-vsock revision declares go 1.25.6 in its
           # go.mod, so anything older cannot build the gateway at all.
