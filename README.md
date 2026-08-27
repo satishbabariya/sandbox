@@ -198,6 +198,26 @@ $ sandbox kernel install   # guest kernel, ~280 MiB, once
 $ sandbox doctor           # checks everything at once
 ```
 
+Then, from a directory you want an agent to work in. A shell first, to see the
+boundary for yourself:
+
+```console
+$ sandbox run shell --allow example.com
+# curl -s -o /dev/null -w '%{http_code}\n' http://example.com
+200
+# curl -s http://neverssl.com
+curl: (6) Could not resolve host: neverssl.com
+```
+
+Then the thing you came for:
+
+```console
+$ sandbox run claude    # reuses the Claude Code sign-in already on your host
+```
+
+An agent's first run builds its environment, which takes a few minutes and
+happens once. `sandbox doctor` reports how much that is holding afterwards.
+
 macOS quarantines anything downloaded through a browser, and the quarantine
 flag strips the codesignature Virtualization requires. `sandbox doctor` reports
 exactly that; clear it with
