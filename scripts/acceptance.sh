@@ -227,15 +227,38 @@ check_absent "and it is gone" "acceptance-stale-probe" \
 
 # The dangerous half: an ephemeral run keeps no record, so age is the only
 # thing separating one in flight from one abandoned.
+# An unnamed run keeps no record by design, and matching on records alone made
+# prune stop the gateway of a sandbox that was still working. Checking only
+# that the process finished missed it: the sleep completed either way. What
+# shows it is whether the sandbox still has a network afterwards.
 INFLIGHT_LOG=$(mktemp)
-$B run "$IMAGE" --no-tty -- /bin/sh -c 'sleep 20; echo SURVIVED_A_PRUNE' >"$INFLIGHT_LOG" 2>&1 &
+$B run "$IMAGE" --no-tty --allow example.com -- /bin/sh -c '
+  wget -T8 -q -O/dev/null http://example.com && echo BEFORE_OK || echo BEFORE_FAIL
+  sleep 15
+  wget -T8 -q -O/dev/null http://example.com && echo AFTER_OK || echo AFTER_FAIL' \
+  >"$INFLIGHT_LOG" 2>&1 &
 INFLIGHT=$!
-sleep 5
+sleep 9
 $B prune >/dev/null 2>&1
 wait "$INFLIGHT" 2>/dev/null
-check "a run in flight survives a concurrent prune" "SURVIVED_A_PRUNE" \
-  "$(cat "$INFLIGHT_LOG" 2>&1)"
+inflight_out=$(cat "$INFLIGHT_LOG" 2>&1)
 rm -f "$INFLIGHT_LOG"
+check "control: a run in flight has a network" "BEFORE_OK" "$inflight_out"
+check "and still has one after a concurrent prune" "AFTER_OK" "$inflight_out"
+
+# The same for its storage: a long session's directories stop looking recent,
+# and age alone had them deleted out from under a running sandbox.
+$B run "$IMAGE" --no-tty -- /bin/sh -c 'sleep 30; echo INTACT' >/dev/null 2>&1 &
+STORAGE_PID=$!
+sleep 8
+LIVE_ID=$(find /tmp -maxdepth 1 -name 'airlock-*' -type d -newermt '-30 seconds' \
+  -exec basename {} \; 2>/dev/null | head -1 | sed 's/^airlock-//')
+touch -t 202001010000 "$HOME/.airlock/run/$LIVE_ID" \
+  "$HOME/.airlock/images/containers/$LIVE_ID" 2>/dev/null || true
+$B prune >/dev/null 2>&1
+check "a live sandbox keeps its rootfs however old it looks" "yes" \
+  "$([ -e "$HOME/.airlock/images/containers/$LIVE_ID" ] && echo yes || echo no)"
+wait "$STORAGE_PID" 2>/dev/null
 
 # The sweep matched on the name prefix alone, so it deleted any file in /tmp
 # called airlock-something -- including one of this suite's own logs.

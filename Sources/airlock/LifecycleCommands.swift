@@ -436,6 +436,13 @@ struct PruneCommand: AsyncParsableCommand {
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
                 isDirectory.boolValue
             else { return false }
+            // A record is not what makes a sandbox live. An ephemeral run keeps
+            // none by design, so matching on records alone made prune stop the
+            // gateway of a sandbox that was still working -- `airlock run
+            // claude` in one terminal lost its network to an `airlock prune` in
+            // another. What settles it is whether the processes it names are
+            // still running.
+            guard !isInUse(directory: url) else { return false }
             return !known.contains(String(name.dropFirst("airlock-".count)))
         }
     }
@@ -449,9 +456,17 @@ struct PruneCommand: AsyncParsableCommand {
     /// command that would remove one.
     ///
     /// An ephemeral run deliberately keeps no record, so a record is not enough
-    /// to tell an abandoned directory from one in use. Age settles it: a run in
-    /// flight is minutes old at most, and an hour is a generous margin before
-    /// deciding nobody is coming back for it.
+    /// to tell an abandoned directory from one in use. What settles it is
+    /// whether a process still owns the sandbox: every run writes its gateway's
+    /// pid, and a foreground one is alive for exactly as long as the user is
+    /// using it.
+    ///
+    /// Age alone was tried first and is not sufficient. A directory's
+    /// modification time does not move while a sandbox writes inside its
+    /// rootfs, so an interactive session that outlived the margin was treated
+    /// as abandoned -- and pruning deleted the rootfs of a running sandbox out
+    /// from under it. Age is kept as a second condition, for the case where the
+    /// pid files are gone too.
     static func abandonedStateDirectories(
         store: SandboxStore, paths: AirlockPaths, olderThan age: TimeInterval = 3600
     ) -> [URL] {
@@ -463,6 +478,7 @@ struct PruneCommand: AsyncParsableCommand {
                 (try? FileManager.default.contentsOfDirectory(
                     at: parent, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
             for url in entries where !known.contains(url.lastPathComponent) {
+                guard !isInUse(url.lastPathComponent, paths: paths) else { continue }
                 let modified =
                     (try? url.resourceValues(forKeys: [.contentModificationDateKey])
                         .contentModificationDate) ?? Date.distantPast
@@ -470,6 +486,34 @@ struct PruneCommand: AsyncParsableCommand {
             }
         }
         return found
+    }
+
+    /// Whether a foreground run is using this sandbox right now.
+    static func isInUse(_ id: String, paths: AirlockPaths) -> Bool {
+        isInUse(directory: paths.socketDirectory(id))
+    }
+
+    /// The same question asked of a runtime directory directly.
+    ///
+    /// Only a foreground run counts. It keeps no record by design -- the user
+    /// is looking at it, so there is nothing to look it up by later -- and
+    /// treating that as abandoned had prune stop the gateway of a sandbox that
+    /// was still working.
+    ///
+    /// A detached sandbox is the opposite case. It is reachable only through
+    /// its record, so one whose record is gone cannot be listed, exec'd into
+    /// or stopped, and leaving it running helps nobody. The two are told apart
+    /// by supervisor.pid, which only a detached sandbox writes.
+    static func isInUse(directory runtime: URL) -> Bool {
+        let supervisor = runtime.appending(path: "supervisor.pid")
+        guard !FileManager.default.fileExists(atPath: supervisor.path) else { return false }
+
+        guard
+            let text = try? String(
+                contentsOf: runtime.appending(path: "gateway.pid"), encoding: .utf8),
+            let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return false }
+        return ProcessLiveness.isAlive(pid)
     }
 }
 
