@@ -300,6 +300,21 @@ struct LogsCommand: AsyncParsableCommand {
             print("no console output recorded for \(name)")
             return
         }
+        // Console output is capped, so a sandbox that printed a great deal has
+        // had its earliest output dropped. Saying so is the difference between
+        // output that starts mid-sentence and output that looks complete but
+        // is not.
+        let rotated = log.appendingPathExtension("prev")
+        if FileManager.default.fileExists(atPath: rotated.path) {
+            let size =
+                (try? FileManager.default.attributesOfItem(atPath: rotated.path)[.size])
+                .flatMap { $0 as? Int64 } ?? 0
+            FileHandle.standardError.write(
+                Data(
+                    ("airlock: this sandbox printed more than the log holds; earlier output "
+                        + "was dropped. The previous \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) "
+                        + "is at \(rotated.path)\n").utf8))
+        }
         FileHandle.standardOutput.write(data)
     }
 }
