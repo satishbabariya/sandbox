@@ -171,8 +171,9 @@ Being wrong about this is worse than not shipping it.
 - **Side channels** — timing, or data encoded in DNS names within an allowed zone.
 - **Filling your disk from inside the sandbox** is bounded, not prevented. Every
   refusal is an audit line, and the guest decides how many there are, so the log
-  is capped at 32 MiB with one generation kept. A sandbox's own writes to its
-  workspace and rootfs are not bounded.
+  is capped at 32 MiB with one generation kept and the gateway does not log
+  refusals a second time. A sandbox's own writes to its workspace and rootfs are
+  not bounded.
 - **Filesystem access beyond directory granularity.** Virtualization.framework
   offers no per-file-operation hook, so airlock cannot express "allow
   `~/.ssh/config`, deny `~/.ssh/id_rsa`".
