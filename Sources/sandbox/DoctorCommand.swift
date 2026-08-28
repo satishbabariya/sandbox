@@ -129,7 +129,7 @@ struct DoctorCommand: AsyncParsableCommand {
     /// The failure this catches is the most confusing one: an unsigned binary
     /// builds and runs right up until the VM starts.
     private func checkEntitlement() -> Status {
-        let executable = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let executable = InstallLayout.executable
         let process = Process()
         process.executableURL = URL(filePath: "/usr/bin/codesign")
         process.arguments = ["-d", "--entitlements", "-", executable.path]

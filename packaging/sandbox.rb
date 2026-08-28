@@ -28,6 +28,11 @@ class Sandbox < Formula
   depends_on "go" => :build
 
   def install
+    # The release workflow stamps the version into a checkout it builds from,
+    # but the source tarball still carries the placeholder -- so a formula that
+    # skipped this would install a binary whose --version lies about itself.
+    inreplace "Sources/SandboxKit/Version.swift", "0.0.1-dev", version.to_s unless build.head?
+
     # --disable-sandbox: SwiftPM compiles Package.swift inside its own
     # sandbox-exec, and macOS refuses to nest that inside brew's build sandbox
     # -- "sandbox_apply: Operation not permitted", before any source is read.
