@@ -21,13 +21,17 @@ class Sandbox < Formula
   head "https://github.com/satishbabariya/sandbox.git", branch: "main"
 
   depends_on arch: :arm64
-  depends_on :macos
-  # Package.swift declares macOS 26 as its minimum.
+  # Package.swift declares macOS 26 as its minimum. A version requirement
+  # already implies the platform, and stating both is deprecated -- brew warns
+  # on every command that touches the formula.
   depends_on macos: :tahoe
   depends_on "go" => :build
 
   def install
-    system "make", "build", "CONFIG=release"
+    # --disable-sandbox: SwiftPM compiles Package.swift inside its own
+    # sandbox-exec, and macOS refuses to nest that inside brew's build sandbox
+    # -- "sandbox_apply: Operation not permitted", before any source is read.
+    system "make", "build", "CONFIG=release", "SWIFT_BUILD_FLAGS=--disable-sandbox"
     bin.install ".build/release/sandbox"
     bin.install ".build/bin/gvsandbox"
     pkgshare.install "scripts/acceptance.sh"

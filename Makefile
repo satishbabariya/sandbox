@@ -22,9 +22,17 @@ all: build
 .PHONY: build
 build: gateway sign
 
+# SwiftPM compiles Package.swift inside its own sandbox-exec. Homebrew builds
+# inside a sandbox too, and macOS does not allow nesting them: the manifest
+# compile fails with "sandbox_apply: Operation not permitted" and the build
+# stops before a line of source is read. The formula passes --disable-sandbox
+# here, which is safe in that context because brew's sandbox is already the
+# outer constraint.
+SWIFT_BUILD_FLAGS ?=
+
 .PHONY: cli
 cli:
-	@swift build -c $(CONFIG)
+	@swift build -c $(CONFIG) $(SWIFT_BUILD_FLAGS)
 
 # Signing is not optional. An unsigned binary builds fine and then fails at
 # VM start with an opaque error, so do it as part of every build.
