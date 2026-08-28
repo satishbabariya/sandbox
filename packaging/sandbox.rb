@@ -1,17 +1,19 @@
 # Homebrew formula for sandbox.
 #
-# NOT PUBLISHED YET. The url and sha256 below point at a release tag that does
-# not exist; both are filled in by the release workflow when one is cut, which
-# also publishes this file as a release asset. Copy it into the tap from there
-# rather than editing it by hand, so the checksum is the one that was actually
-# built.
+# The url and sha256 here are placeholders. The release workflow stamps them
+# with the tag it built and publishes the result as a release asset, and the
+# tap takes that file rather than this one -- so the checksum in a tap is
+# always one that was actually built:
 #
-# It exists here so that publishing is a matter of tagging, not of writing a
+#   gh release download vX.Y.Z --pattern sandbox.rb --dir Formula --clobber
+#
+# This file exists so that publishing is a matter of tagging, not of writing a
 # formula under time pressure.
 #
-# Building from source rather than shipping a bottle: the binary must be
+# Building from source rather than pouring a bottle: the binary must be
 # codesigned with com.apple.security.virtualization on the machine it runs on,
-# and a poured bottle would arrive without a signature that macOS accepts.
+# and a bottle would arrive without a signature that macOS accepts.
+
 class Sandbox < Formula
   desc "Run coding agents in sandboxes whose network egress they cannot bypass"
   homepage "https://github.com/satishbabariya/sandbox"

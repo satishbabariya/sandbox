@@ -223,9 +223,12 @@ flag strips the codesignature Virtualization requires. `sandbox doctor` reports
 exactly that; clear it with
 `xattr -d com.apple.quarantine /usr/local/bin/sandbox`.
 
-Homebrew, once the tap is published:
-`brew install satishbabariya/tap/sandbox`. Each release carries a `sandbox.rb`
-with its url and checksum already stamped.
+Homebrew:
+
+```console
+$ brew install satishbabariya/tap/sandbox
+```
+
 It builds from source rather than pouring a bottle: the binary has to be
 codesigned with `com.apple.security.virtualization` on the machine it runs on,
 and a bottle would arrive without a signature macOS accepts.
