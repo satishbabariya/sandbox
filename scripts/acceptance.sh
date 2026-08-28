@@ -234,6 +234,30 @@ check "the footprint is reported" "sandbox is holding" "$out"
 check "broken into what can be cleared" "agent environments" "$out"
 check "and what cannot" "images" "$out"
 
+echo "== the CLI works installed, not just from a checkout =="
+
+# Regression: the gateway path and the entitlement check were both derived from
+# argv[0]. Found on PATH, argv[0] is the bare name "sandbox", so it resolved
+# against the current directory -- an installed CLI looked for its gateway in
+# whatever directory the user happened to be standing in, and every run failed.
+INSTALL_DIR=$(mktemp -d)
+mkdir -p "$INSTALL_DIR/bin"
+cp "$B" "$INSTALL_DIR/bin/sandbox"
+GATEWAY="$(dirname "$B")/gvsandbox"
+[ -x "$GATEWAY" ] || GATEWAY="$PWD/.build/bin/gvsandbox"
+cp "$GATEWAY" "$INSTALL_DIR/bin/gvsandbox"
+
+# Run from a directory that is not the checkout, reaching the binary by name.
+out=$(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox run "$IMAGE" \
+  --allow example.com -- /bin/sh -c \
+  'wget -T 8 -q -O /dev/null http://example.com && echo FETCHED || echo BLOCKED' 2>&1)
+check "an installed CLI finds its own gateway" "FETCHED" "$out"
+
+out=$(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox doctor 2>&1)
+check "and doctor inspects the binary that is running" \
+  "com.apple.security.virtualization present" "$out"
+rm -rf "$INSTALL_DIR"
+
 echo "== abandoned state can be reclaimed =="
 
 # A run that exits normally clears its own directories. One that is killed --

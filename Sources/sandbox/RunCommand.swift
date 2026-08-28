@@ -463,7 +463,7 @@ struct RunCommand: AsyncParsableCommand {
         try JSONEncoder().encode(launch).write(to: specPath, options: .atomic)
 
         let process = Process()
-        process.executableURL = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        process.executableURL = InstallLayout.executable
         process.arguments = ["supervise", "--spec", specPath.path]
 
         let logPath = directory.appending(path: "supervisor.log")
@@ -544,12 +544,23 @@ struct RunCommand: AsyncParsableCommand {
 /// Finds the gateway binary next to the running executable, falling back to the
 /// build tree so the CLI works from a checkout without installing.
 enum InstallLayout {
+    /// argv[0] is a usable path only when the caller spelled one out. Invoked
+    /// through PATH -- which is how an installed `sandbox` is always run -- it
+    /// is the bare name, and resolving that yields a path under the current
+    /// directory. Bundle.main reads the real path from the kernel.
+    static var executable: URL {
+        if let path = Bundle.main.executablePath {
+            return URL(filePath: path).resolvingSymlinksInPath()
+        }
+        return URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    }
+
     static func gatewayBinary() -> URL {
         if let override = ProcessInfo.processInfo.environment["SANDBOX_GATEWAY"] {
             return URL(filePath: override)
         }
 
-        let exe = URL(filePath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+        let exe = executable
         var directory = exe.deletingLastPathComponent()
 
         // An installed layout puts the gateway beside the CLI. A checkout puts
