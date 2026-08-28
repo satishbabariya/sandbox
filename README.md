@@ -190,9 +190,9 @@ Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
 From a [release](https://github.com/satishbabariya/sandbox/releases/latest):
 
 ```console
-$ gh release download v0.1.1 --repo satishbabariya/sandbox
-$ shasum -a 256 -c sandbox-v0.1.1-darwin-arm64.tar.gz.sha256
-$ tar -xzf sandbox-v0.1.1-darwin-arm64.tar.gz
+$ gh release download v0.1.2 --repo satishbabariya/sandbox
+$ shasum -a 256 -c sandbox-v0.1.2-darwin-arm64.tar.gz.sha256
+$ tar -xzf sandbox-v0.1.2-darwin-arm64.tar.gz
 $ sudo cp sandbox-*/bin/* /usr/local/bin/
 $ sandbox kernel install   # guest kernel, ~280 MiB, once
 $ sandbox doctor           # checks everything at once
