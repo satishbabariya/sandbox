@@ -6,6 +6,26 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-08-28
+
+### Fixed
+
+- `brew install` could never have worked. SwiftPM compiles `Package.swift`
+  inside its own `sandbox-exec`, Homebrew builds inside a sandbox of its own,
+  and macOS refuses to nest the two: the build died with `sandbox_apply:
+  Operation not permitted` before reading a line of source. The formula now
+  passes `--disable-sandbox`, which is safe because brew's sandbox is already
+  the outer constraint.
+- An installed binary did not work at all. The gateway path, `doctor`'s
+  entitlement check, and the re-exec that backs detached sandboxes were all
+  derived from `argv[0]`, which is the bare name `sandbox` when the binary is
+  found on PATH — so they resolved against whatever directory the user happened
+  to be in. An installed CLI hunted for its gateway in the current directory and
+  never started one, and `doctor` called a correctly signed binary unsigned.
+- A binary installed by Homebrew reported its version as `0.0.1-dev`. The
+  release workflow stamps a checkout it builds itself, but the source tarball
+  keeps the placeholder, and the formula built from the tarball.
+
 ## [0.1.2] — 2026-08-27
 
 ### Fixed
