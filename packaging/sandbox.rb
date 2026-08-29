@@ -41,7 +41,11 @@ class Sandbox < Formula
     system "make", "build", "CONFIG=release", "SWIFT_BUILD_FLAGS=--disable-sandbox"
     bin.install ".build/release/sandbox"
     bin.install ".build/bin/gvsandbox"
-    pkgshare.install "scripts/acceptance.sh"
+    # acceptance.sh is deliberately not installed. It resolves its fixtures
+    # relative to a checkout -- pty-probe.py, testdata/kits -- so installed on
+    # its own it cannot run, and told a user who has no checkout to "run: make
+    # build". Cloning the repo is what both the README and CONTRIBUTING
+    # already assume for it.
   end
 
   def caveats
