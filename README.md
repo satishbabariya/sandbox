@@ -523,6 +523,23 @@ They still get passwordless `sudo` **inside the sandbox**, because installing
 packages is a normal thing for an agent to do. That grants nothing beyond the
 VM — egress is enforced outside it, and the host filesystem is not reachable.
 
+## Agents remember
+
+An agent keeps its own configuration between runs: the preferences it saves,
+its session history, its model choice. It starts as a copy of your own —
+`~/.claude` for Claude Code, seeded the first time you run the agent — and
+diverges from there. Your real config is never written; the agent's copy
+lives under `~/.sandbox/state/<agent>`.
+
+Because sessions are keyed by real paths (below), Claude Code inside the
+sandbox can resume sessions you started on the host in the same project.
+
+To throw the agent's copy away and start again from your current config:
+
+```console
+$ sandbox agents reset claude
+```
+
 ## The workspace is at its host path
 
 An agent sees the directory it works in at the same path it has on the host —

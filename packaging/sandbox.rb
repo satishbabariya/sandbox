@@ -1,9 +1,9 @@
 # Homebrew formula for sandbox.
 #
-# The url and sha256 here are placeholders. The release workflow stamps them
-# with the tag it built and publishes the result as a release asset, and the
-# tap takes that file rather than this one -- so the checksum in a tap is
-# always one that was actually built:
+# The release workflow stamps the url and sha256 with the tag it built and
+# publishes the result as a release asset; the tap takes that file rather
+# than this one, so the checksum in a tap is always one that was actually
+# built. In the repository the two lines hold placeholders:
 #
 #   gh release download vX.Y.Z --pattern sandbox.rb --dir Formula --clobber
 #
