@@ -72,6 +72,34 @@ jobs:
           swift format lint --recursive --strict Sources Tests \
             || { echo "run: swift format --in-place --recursive Sources Tests"; exit 1; }
 
+      # The gateway path and the entitlement check were both read from argv[0],
+      # which is the bare name when the CLI is found on PATH -- so an installed
+      # sandbox resolved both against whatever directory the user was standing
+      # in, hunted for its gateway there, and never started one. The acceptance
+      # suite covers this too, but it boots real VMs and these runners cannot,
+      # and seeing it needs no VM at all: only the binary, reached by name,
+      # from somewhere that is not the checkout.
+      #
+      # `make build` re-signs, because `swift test` above strips the
+      # entitlement back off the binary it runs.
+      - name: Works installed, not just from a checkout
+        run: |
+          make build
+          dir=$(mktemp -d)/bin
+          mkdir -p "$dir"
+          cp .build/debug/sandbox "$dir/"
+          cp .build/bin/gvsandbox "$dir/"
+
+          # doctor exits non-zero here for an unrelated reason -- a runner has
+          # no guest kernel -- so assert on the two lines this is about.
+          out=$(cd "$HOME" && PATH="$dir:$PATH" sandbox doctor 2>&1 || true)
+          printf '%s\n' "$out"
+
+          printf '%s\n' "$out" | grep -q "ok    entitlement" \
+            || { echo "FAIL: doctor did not find the entitlement on the running binary"; exit 1; }
+          printf '%s\n' "$out" | grep "gateway binary" | grep -q "^  ok .*$dir/gvsandbox$" \
+            || { echo "FAIL: gateway was not resolved next to the binary"; exit 1; }
+
   gateway:
     name: Gateway build and test
     runs-on: ubuntu-latest
