@@ -20,6 +20,13 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ### Fixed
 
+- A run that was killed rather than stopped — Ctrl-C twice, a timeout, a
+  crash — leaked its gateway process forever, and `prune` could not see it:
+  the process still held its runtime directory, and a missing directory was
+  the only sign `prune` looked for. Sixteen were found running on the
+  development machine, the oldest for two days. A gateway whose owner died is
+  now recognised by its parent, and `prune` stops it and removes what the
+  killed run left in /tmp.
 - An alpine-based agent with an unprivileged user never started: busybox
   ships a `setpriv` without the flags the privilege drop uses, and finding it
   was treated as being able to use it. It is now probed by running it, and
