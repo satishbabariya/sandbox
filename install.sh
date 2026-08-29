@@ -59,7 +59,9 @@ say "checksum verified"
 
 tar -xzf "$ARCHIVE"
 SRC="sandbox-$TAG-darwin-arm64/bin"
-[ -x "$SRC/sandbox" ] && [ -x "$SRC/gvsandbox" ] || fail "archive layout unexpected"
+if [ ! -x "$SRC/sandbox" ] || [ ! -x "$SRC/gvsandbox" ]; then
+  fail "archive layout unexpected"
+fi
 
 # Belt and braces: curl does not set the quarantine attribute, but if this
 # archive travelled through something that did, the signature check at VM
