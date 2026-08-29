@@ -110,7 +110,9 @@ public actor AgentPreparer {
                     }
                     if buildDirectories.allSatisfy({
                         !FileManager.default.fileExists(atPath: $0.path)
-                    }) { break }
+                    }) {
+                        break
+                    }
                     if attempt < 3 { try? await Task.sleep(for: .milliseconds(400)) }
                 }
                 Darwin.exit(130)  // 128 + SIGINT, what a shell reports for Ctrl-C.
