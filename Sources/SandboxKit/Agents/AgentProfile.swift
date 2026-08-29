@@ -256,11 +256,14 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "statsig.anthropic.com", "sentry.io"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic", "claude"],
-            // Both are copies, not binds: Claude Code rewrites its config, and
-            // a bind would let a sandboxed agent corrupt the user's real one.
-            // It reads .claude.json as a file beside the directory, not inside
-            // it, and refuses to start without it.
-            mounts: ["~/.claude:/root/.claude:copy", "~/.claude.json:/root/.claude.json:copy"],
+            // State, not a bind and not a per-run copy: the agent gets its
+            // own persistent copy of the config, seeded from the host's once.
+            // A bind would let a sandboxed agent corrupt the user's real one,
+            // and a per-run copy threw away every preference the agent saved
+            // and cost 45s of startup copying it into the guest each time.
+            // Claude Code reads .claude.json as a file beside the directory,
+            // not inside it.
+            mounts: ["~/.claude:/root/.claude:state", "~/.claude.json:/root/.claude.json:state"],
             mcpConfigPath: "/root/.mcp.json",
             runAsUser: "agent"
         ),
@@ -277,7 +280,7 @@ extension AgentProfile {
             allow: ["api.openai.com", "chatgpt.com", "auth.openai.com"]
                 + commonToolingEgress + gitEgress,
             secrets: ["openai"],
-            mounts: ["~/.codex:/root/.codex:copy"],
+            mounts: ["~/.codex:/root/.codex:state"],
             mcpConfigPath: "/root/.mcp.json",
             runAsUser: "agent"
         ),
@@ -297,7 +300,7 @@ extension AgentProfile {
                 "accounts.google.com",
             ] + commonToolingEgress + gitEgress,
             secrets: ["gemini"],
-            mounts: ["~/.gemini:/root/.gemini:copy"],
+            mounts: ["~/.gemini:/root/.gemini:state"],
             mcpConfigPath: "/root/.mcp.json",
             runAsUser: "agent"
         ),
@@ -314,7 +317,7 @@ extension AgentProfile {
             allow: ["api.anthropic.com", "api.openai.com", "openrouter.ai"]
                 + commonToolingEgress + gitEgress,
             secrets: ["anthropic"],
-            mounts: ["~/.config/opencode:/root/.config/opencode:copy"],
+            mounts: ["~/.config/opencode:/root/.config/opencode:state"],
             mcpConfigPath: "/root/.mcp.json",
             runAsUser: "agent"
         ),
@@ -450,24 +453,34 @@ public struct AgentRegistry: Sendable {
     }
 }
 
-/// One `host:guest[:ro|:copy]` mount.
+/// One `host:guest[:ro|:copy|:state]` mount.
 public struct MountSpec: Sendable, Equatable {
     public var source: URL
     public var destination: String
     public var readOnly: Bool
     /// Give the guest a private copy rather than the host's own files.
     public var copy: Bool
+    /// Like `copy`, but the private copy is kept between runs. Seeded from the
+    /// host source once, then shared read-write, so what the agent writes to
+    /// its own configuration survives -- while the host's original is still
+    /// never touched. Also why it is fast: a 700 MB `~/.claude` was being
+    /// copied file-by-file inside the guest at every start, which cost 45
+    /// seconds before the agent ran anything.
+    public var state: Bool
 
     /// Parse a mount argument, expanding `~`.
     ///
     /// Returns nil when the host path does not exist — an agent profile may
     /// reference a config directory the user has never created, and that should
     /// not stop the sandbox from starting.
-    public init(source: URL, destination: String, readOnly: Bool, copy: Bool = false) {
+    public init(
+        source: URL, destination: String, readOnly: Bool, copy: Bool = false, state: Bool = false
+    ) {
         self.source = source
         self.destination = destination
         self.readOnly = readOnly
         self.copy = copy
+        self.state = state
     }
 
     public static func parse(_ raw: String) -> MountSpec? {
@@ -481,14 +494,19 @@ public struct MountSpec: Sendable, Equatable {
                 + host.dropFirst()
         }
         let url = URL(filePath: host).standardizedFileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-
         let mode = parts.count > 2 ? parts[2] : ""
+        // A state mount tolerates a missing source: the seed is simply empty,
+        // and whatever the agent writes still persists. Every other mode needs
+        // the host path to exist to mean anything.
+        guard mode == "state" || FileManager.default.fileExists(atPath: url.path) else {
+            return nil
+        }
         return MountSpec(
             source: url,
             destination: parts[1],
             readOnly: mode == "ro",
-            copy: mode == "copy"
+            copy: mode == "copy",
+            state: mode == "state"
         )
     }
 }

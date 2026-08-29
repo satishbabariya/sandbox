@@ -1007,6 +1007,50 @@ sleep 2
 check "and stops it" "yes" \
   "$([ "$(count_supervisors)" -le "$BASE_SUP" ] && echo yes || echo no)"
 
+echo "== an agent's own configuration persists between runs =="
+
+# Agents keep their own copy of their config -- seeded from the host's once,
+# then written through a share, so preferences the agent saves survive. The
+# host's real config must never change, and the guest must not be copying the
+# tree at startup any more (that cost 45 seconds of every start).
+STATE_AGENT="acceptstate"
+STATE_SEED=$(mktemp -d)
+echo "from-the-host" > "$STATE_SEED/seeded.txt"
+mkdir -p "$HOME/.sandbox/agents"
+cat > "$HOME/.sandbox/agents/$STATE_AGENT.json" <<AGENT
+{
+  "name": "$STATE_AGENT",
+  "displayName": "State acceptance probe",
+  "image": "$IMAGE",
+  "command": ["/bin/sh"],
+  "mounts": ["$STATE_SEED:/root/.stateprobe:state"],
+  "runAsUser": "agent"
+}
+AGENT
+"$B" agents reset "$STATE_AGENT" >/dev/null 2>&1
+
+out=$("$B" run "$STATE_AGENT" --no-tty -- /bin/sh -c \
+  'cat "$HOME/.stateprobe/seeded.txt"; echo saved-inside > "$HOME/.stateprobe/pref.txt"' 2>&1)
+check "the seed from the host is there" "from-the-host" "$out"
+
+out=$("$B" run "$STATE_AGENT" --no-tty -- /bin/sh -c 'cat "$HOME/.stateprobe/pref.txt"' 2>&1)
+check "what the agent saved is still there next run" "saved-inside" "$out"
+
+check "and never reached the host" "absent" \
+  "$([ -e "$STATE_SEED/pref.txt" ] && echo present || echo absent)"
+
+# Re-seeding is explicit: reset discards the agent's copy, the next run
+# starts from the host's current config again.
+"$B" agents reset "$STATE_AGENT" >/dev/null 2>&1
+out=$("$B" run "$STATE_AGENT" --no-tty -- /bin/sh -c \
+  'ls "$HOME/.stateprobe/"' 2>&1)
+check "reset re-seeds from the host" "seeded.txt" "$out"
+check_absent "and the discarded save is gone" "pref.txt" "$out"
+
+"$B" agents reset "$STATE_AGENT" >/dev/null 2>&1
+rm -f "$HOME/.sandbox/agents/$STATE_AGENT.json"
+rm -rf "$STATE_SEED"
+
 echo "== a kit is imported and run =="
 
 # Translating a kit and running one are different things: three bugs that made

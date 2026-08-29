@@ -6,6 +6,25 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Agents now keep their own configuration between runs. It is seeded from
+  your `~/.claude` (or `~/.codex`, `~/.gemini`) the first time, and everything
+  the agent saves — session names, model choice, settings — survives to the
+  next run. Your real config is still never written. `sandbox agents reset
+  <name>` discards the agent's copy and re-seeds from yours.
+- `sandbox run claude` starts in about half a second. It used to copy the
+  whole of `~/.claude` — 700 MB and 14,000 files here — into the guest at
+  every start, which took 45 seconds before the agent ran anything, and threw
+  the copy away at exit.
+
+### Fixed
+
+- An alpine-based agent with an unprivileged user never started: busybox
+  ships a `setpriv` without the flags the privilege drop uses, and finding it
+  was treated as being able to use it. It is now probed by running it, and
+  the drop falls back to `su` where it fails.
+
 ## [0.1.3] — 2026-08-28
 
 ### Fixed

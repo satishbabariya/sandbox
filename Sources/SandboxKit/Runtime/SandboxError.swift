@@ -13,6 +13,9 @@ public enum SandboxError: Error, CustomStringConvertible {
     /// A VM refused to start. Reported with the remedy when the cause is the
     /// missing entitlement, which is the overwhelmingly common one.
     case notEntitled(underlying: any Error)
+    /// A ':state' mount was asked for outside an agent, where there is no
+    /// state directory to keep it in.
+    case stateNeedsAgent(destination: String)
 
     public var description: String {
         switch self {
@@ -37,6 +40,12 @@ public enum SandboxError: Error, CustomStringConvertible {
                 """
         case .notRunning:
             return "sandbox is not running"
+        case .stateNeedsAgent(let destination):
+            return """
+                mount for \(destination): ':state' persists an agent's own configuration, \
+                and this sandbox runs a plain image
+                use ':copy' for a discardable private copy
+                """
         }
     }
 }

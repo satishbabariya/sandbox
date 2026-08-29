@@ -68,6 +68,13 @@ public struct SandboxPaths: Sendable {
     /// The directories every sandbox's state hangs off, so a sweep can find
     /// what no sandbox owns any more.
     public var runtimeRoot: URL { root.appending(path: "run") }
+
+    /// Persistent per-agent state: the agent's own copy of its configuration,
+    /// seeded from the host's once and kept between runs. Not under agents/,
+    /// which holds profile definitions.
+    public func agentState(_ agent: String) -> URL {
+        root.appending(path: "state").appending(path: agent)
+    }
     public var containerRootParent: URL { images.appending(path: "containers") }
 
     /// Where ContainerManager unpacks a sandbox's rootfs. Removing a sandbox

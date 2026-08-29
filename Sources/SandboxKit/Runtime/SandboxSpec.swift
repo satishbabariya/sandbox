@@ -20,6 +20,9 @@ public struct SandboxSpec: Sendable {
     public var workspaceDestination: String
     /// Extra host directories to share, beyond the workspace.
     public var mounts: [MountSpec]
+    /// Where mounts marked `state` keep their persistent copies. Set when the
+    /// sandbox runs an agent; a state mount without it cannot be honoured.
+    public var stateDirectory: URL?
     /// Give the agent a private git clone instead of your working tree.
     public var cloneWorkspace: Bool
     /// MCP servers to declare to the agent, and where to write the file.

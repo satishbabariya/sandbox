@@ -111,6 +111,48 @@ public actor Sandbox {
             dockerDisk = disk
         }
 
+        // Seed state mounts before configuring. A mount marked `state` is the
+        // agent's own persistent copy of its configuration: created from the
+        // host's the first time, shared read-write ever after, so what the
+        // agent writes survives between runs and the host's original is never
+        // touched. The copy is a host-side APFS clone -- the alternative,
+        // copying inside the guest, cost 45 seconds of every start for a
+        // 700 MB ~/.claude.
+        var stateLinks: [(destination: String, target: String)] = []
+        let stateMounts = spec.mounts.filter(\.state)
+        if !stateMounts.isEmpty {
+            guard let stateHome = spec.stateDirectory else {
+                throw SandboxError.stateNeedsAgent(
+                    destination: stateMounts[0].destination)
+            }
+            try createPrivateDirectory(at: stateHome)
+            for mount in stateMounts {
+                let item = URL(filePath: mount.destination).lastPathComponent
+                let kept = stateHome.appending(path: item)
+                if !FileManager.default.fileExists(atPath: kept.path),
+                    FileManager.default.fileExists(atPath: mount.source.path)
+                {
+                    // Copy to a temporary name and rename: a seed interrupted
+                    // halfway must not leave a partial copy that every later
+                    // run trusts as the real thing. The rename is atomic; the
+                    // orphaned temporary of a killed run is swept here too.
+                    let staging = stateHome.appending(path: ".seeding-\(item)")
+                    try? FileManager.default.removeItem(at: staging)
+                    FileHandle.standardError.write(
+                        Data("sandbox: keeping a copy of \(mount.source.path) for this agent (first run)\n".utf8))
+                    do {
+                        try FileManager.default.copyItem(at: mount.source, to: staging)
+                        try FileManager.default.moveItem(at: staging, to: kept)
+                    } catch {
+                        try? FileManager.default.removeItem(at: staging)
+                        logger?.warning(
+                            "could not seed \(item) from \(mount.source.path): \(error)")
+                    }
+                }
+                stateLinks.append((mount.destination, "\(Self.guestStateDirectory)/\(item)"))
+            }
+        }
+
         // Stage copies before configuring, so a mount marked `copy` shares a
         // duplicate the guest may rewrite without reaching the host's own.
         var stagedMounts: [String: URL] = [:]
@@ -335,7 +377,7 @@ public actor Sandbox {
             config.process.arguments = Self.hostnameBootstrap(
                 wrapping: config.process.arguments)
 
-            for mount in spec.mounts {
+            for mount in spec.mounts where !mount.state {
                 // A copy mount shares a staged duplicate, so the guest can
                 // write freely and the host's originals are untouchable.
                 let source =
@@ -348,6 +390,20 @@ public actor Sandbox {
                         destination: mount.destination,
                         options: mount.readOnly ? ["ro"] : []
                     ))
+            }
+
+            // State mounts arrive as one share of the agent's state home, with
+            // symlinks placed at each declared destination -- linking rather
+            // than mounting item-by-item because a share must be a directory,
+            // and .claude.json is a file.
+            if let stateHome = spec.stateDirectory, !stateLinks.isEmpty {
+                config.mounts.append(
+                    .share(
+                        source: stateHome.path(percentEncoded: false),
+                        destination: Self.guestStateDirectory
+                    ))
+                config.process.arguments = Self.stateBootstrap(
+                    wrapping: config.process.arguments, links: stateLinks)
             }
         }
 

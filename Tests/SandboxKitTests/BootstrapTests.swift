@@ -64,6 +64,8 @@ struct BootstrapTests {
                 wrapping: ["/bin/true"], user: "agent", workspace: "/w", cloned: false),
             Sandbox.trustBootstrap(wrapping: ["/bin/true"]),
             Sandbox.cloneBootstrap(wrapping: ["/bin/true"], destination: "/w"),
+            Sandbox.stateBootstrap(
+                wrapping: ["/bin/true"], links: [("/root/.claude", "/sandbox-state/.claude")]),
         ]
         for layer in layers {
             #expect(layer.joined(separator: " ").contains("exec"))
