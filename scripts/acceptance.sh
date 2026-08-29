@@ -196,6 +196,12 @@ cat >"$AGENTS_DIR/acceptslow.json" <<'PROFILE'
  "command":["/bin/sh","-c","echo NEVER_REACHED"]}
 PROFILE
 rm -rf "$HOME/.sandbox/cache/agents/acceptslow" 2>/dev/null || true
+# Debris of this very case from an earlier, aborted run would fail the
+# rootfs check below no matter what this run does. Interrupt cleanup can
+# lose a race under load (prune reclaims it after an hour); the case must
+# measure this run, not history.
+rm -rf "$HOME/.sandbox/run/build-acceptslow-"* \
+  "$HOME/.sandbox/images/containers/build-acceptslow-"* 2>/dev/null || true
 SLOW_GW=$(count_gateways)
 $B run acceptslow --no-tty -- /bin/true >/dev/null 2>&1 &
 SLOW_PID=$!
