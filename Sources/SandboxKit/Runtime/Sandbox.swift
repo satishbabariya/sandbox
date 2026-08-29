@@ -377,6 +377,16 @@ public actor Sandbox {
             config.process.arguments = Self.hostnameBootstrap(
                 wrapping: config.process.arguments)
 
+            // Agents get the workspace at its host path; /workspace stays as
+            // a symlink for tools and documentation that learned the old
+            // name. Only created where the image does not already have one --
+            // replacing a directory an image ships would destroy its content.
+            if spec.workspace != nil, spec.workspaceDestination != "/workspace" {
+                config.process.arguments = Self.workspaceCompatBootstrap(
+                    wrapping: config.process.arguments,
+                    destination: spec.workspaceDestination)
+            }
+
             for mount in spec.mounts where !mount.state {
                 // A copy mount shares a staged duplicate, so the guest can
                 // write freely and the host's originals are untouchable.

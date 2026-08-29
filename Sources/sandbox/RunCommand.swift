@@ -43,7 +43,12 @@ struct RunCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Memory, e.g. 4g or 512m. Default 4g, or the configured value.")
     var memory: String?
 
-    @Option(name: .shortAndLong, help: "Host directory to mount at /workspace. Defaults to the current directory for agents.")
+    @Option(
+        name: .shortAndLong,
+        help: """
+            Host directory the sandbox works in; the current directory for agents. \
+            Agents see it at its host path, plain images at /workspace.
+            """)
     var workspace: String?
 
     @Option(name: .shortAndLong, help: "Extra mount, host:guest[:ro]; repeatable.")
@@ -306,6 +311,15 @@ struct RunCommand: AsyncParsableCommand {
                 .path(percentEncoded: false)
         } else if profile != nil {
             launch.workspace = FileManager.default.currentDirectoryPath
+        }
+        // And see it at the path it has on the host. Coding agents key
+        // everything on the working directory -- project history, trust,
+        // session resume -- and a guest where every project is "/workspace"
+        // makes every project the same project: histories mix, and a session
+        // started in one repository resumes in another. /workspace remains as
+        // a symlink for anything that has learned it.
+        if profile != nil, let workspace = launch.workspace {
+            launch.workspaceDestination = workspace
         }
 
         if detach {
