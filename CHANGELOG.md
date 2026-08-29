@@ -6,6 +6,34 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-08-30
+
+### Added
+
+- A curl-able installer. `curl -fsSL
+  https://raw.githubusercontent.com/satishbabariya/sandbox/main/install.sh |
+  sh` verifies the release checksum, installs the signed binaries with no
+  toolchain needed, and upgrades when re-run.
+
+### Changed
+
+- Agents see the workspace at its host path. Coding agents key project
+  history, trust and session resume on the working directory, so a guest
+  where every project was `/workspace` made every project the same project.
+  `/workspace` remains as a symlink; plain image runs are unchanged. A
+  session started on the host is now resumable inside the sandbox in the
+  same project.
+- Claude Code's status screen inside a sandbox no longer carries a page of
+  warnings: the auto-updater is off (a cached environment updates via
+  `--rebuild`, not from inside), and the native-install path the seeded
+  config references now exists in the guest.
+
+### Fixed
+
+- Interrupting an agent build under load could leave a half-built rootfs
+  behind: the cleanup raced the in-flight image unpack and lost. It now
+  re-removes what reappears, and `prune` remains the backstop.
+
 ## [0.1.4] — 2026-08-29
 
 ### Changed
