@@ -6,6 +6,8 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-08-29
+
 ### Changed
 
 - Agents now keep their own configuration between runs. It is seeded from
