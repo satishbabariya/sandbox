@@ -523,6 +523,16 @@ They still get passwordless `sudo` **inside the sandbox**, because installing
 packages is a normal thing for an agent to do. That grants nothing beyond the
 VM — egress is enforced outside it, and the host filesystem is not reachable.
 
+## The workspace is at its host path
+
+An agent sees the directory it works in at the same path it has on the host —
+`sandbox run claude` in `~/code/app` puts the guest in `~/code/app`, not in a
+generic `/workspace`. Coding agents key project history, trust and session
+resume on the working directory, so a guest where every project is
+`/workspace` makes every project the same project. `/workspace` remains as a
+symlink, and plain images (`sandbox run alpine:3.20 -w dir`) still mount at
+`/workspace` as documented.
+
 ## Mounts that agents write to
 
 An agent rewrites its own configuration. A profile mount marked `:copy` gives

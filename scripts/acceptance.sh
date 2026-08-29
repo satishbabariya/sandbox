@@ -1047,6 +1047,19 @@ out=$("$B" run "$STATE_AGENT" --no-tty -- /bin/sh -c \
 check "reset re-seeds from the host" "seeded.txt" "$out"
 check_absent "and the discarded save is gone" "pref.txt" "$out"
 
+# Agents see the workspace at its host path. Coding agents key project
+# history, trust and session resume on the working directory; a guest where
+# every project is /workspace makes every project the same project.
+WS_DIR=$(mktemp -d)
+echo host-path-probe > "$WS_DIR/probe.txt"
+out=$("$B" run "$STATE_AGENT" --no-tty -w "$WS_DIR" -- /bin/sh -c \
+  'pwd; cat "$(pwd)/probe.txt"; readlink /workspace' 2>&1)
+check "the guest working directory is the host path" "$WS_DIR" "$out"
+check "and the workspace is really mounted there" "host-path-probe" "$out"
+check "/workspace still points at it for old habits" "$WS_DIR" \
+  "$(printf '%s' "$out" | tail -1)"
+rm -rf "$WS_DIR"
+
 "$B" agents reset "$STATE_AGENT" >/dev/null 2>&1
 rm -f "$HOME/.sandbox/agents/$STATE_AGENT.json"
 rm -rf "$STATE_SEED"

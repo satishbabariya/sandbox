@@ -228,6 +228,19 @@ extension Sandbox {
         return ["/bin/sh", "-c", script, "sandbox"] + command
     }
 
+    /// Keep `/workspace` meaning something now that agents see their
+    /// workspace at its host path, then exec.
+    static func workspaceCompatBootstrap(
+        wrapping command: [String], destination: String
+    ) -> [String] {
+        guard !command.isEmpty else { return command }
+        let script = """
+            [ -e /workspace ] || ln -sn \(shellQuote(destination)) /workspace
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", script, "sandbox"] + command
+    }
+
     static let guestCertificateDirectory = "/etc/sandbox"
     static let guestCertificatePath = "/etc/sandbox/sandbox-ca.crt"
 
