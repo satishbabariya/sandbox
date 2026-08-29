@@ -375,14 +375,29 @@ struct PruneCommand: AsyncParsableCommand {
             removed += abandoned.count
         }
 
-        // Anything whose directory was already gone before this ran, and so
-        // could never have been found through a pid file.
+        // Anything whose directory was already gone before this ran (and so
+        // could never have been found through a pid file), and gateways whose
+        // owner died without stopping them -- a run killed rather than
+        // stopped leaves the gateway reparented to init, still holding its
+        // directory. Sixteen of those were found on the development machine,
+        // the oldest two days old.
         for stray in StrayProcess.all() where ProcessLiveness.isAlive(stray.pid) {
             if kill(stray.pid, SIGTERM) == 0 {
                 print("stopped stray \(stray.kind) (\(stray.directory))")
                 removed += 1
             }
+            // The directory of a killed run holds only sockets, a config and
+            // a small log; removing it is what lets a later prune see that
+            // nothing of the run remains.
+            try? FileManager.default.removeItem(at: URL(filePath: stray.directory))
         }
+
+        // Runtime directories in /tmp whose gateway has already exited: the
+        // corpse of a killed run after its processes are gone. The pid file
+        // is written as the gateway starts, so a directory that has one
+        // naming a dead process is settled; one with no pid file yet may be
+        // a sandbox mid-start, and age settles that instead.
+        removed += Self.sweepDeadGatewayDirectories()
 
         if supervisors > 0 {
             print(
@@ -393,6 +408,53 @@ struct PruneCommand: AsyncParsableCommand {
         }
 
         if removed == 0 { print("nothing to prune") }
+    }
+
+    /// Remove /tmp runtime directories whose gateway is gone.
+    ///
+    /// Belt and braces with the stray sweep above: that one needs the process
+    /// to still exist; this one cleans up after processes that are already
+    /// dead. Only directories that provably belonged to a finished run are
+    /// touched -- a pid file naming a process that is not one of ours, or no
+    /// pid file and an hour of silence.
+    static func sweepDeadGatewayDirectories() -> Int {
+        let tmp = SandboxPaths().socketDirectory("x").deletingLastPathComponent()
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: tmp, includingPropertiesForKeys: [.contentModificationDateKey])
+        else { return 0 }
+        var swept = 0
+        for directory in entries where directory.lastPathComponent.hasPrefix("sandbox-") {
+            // Only directories bearing our own layout. "sandbox" is a generic
+            // enough word that /tmp may hold a stranger's sandbox-something,
+            // and this function deletes.
+            let ours = ["gateway.yaml", "net.sock", "guest.sock"].contains { marker in
+                FileManager.default.fileExists(
+                    atPath: directory.appending(path: marker).path)
+            }
+            guard ours else { continue }
+            let pidFile = directory.appending(path: "gateway.pid")
+            if let text = try? String(contentsOf: pidFile, encoding: .utf8),
+                let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+            {
+                // A live pid that is genuinely our gateway belongs to a
+                // running sandbox (or was just handled as a stray above).
+                guard !StrayProcess.isOurs(pid: pid) else { continue }
+            } else {
+                // No pid file could be a sandbox that is starting right now.
+                // An hour without one is not starting.
+                let modified =
+                    (try? directory.resourceValues(forKeys: [.contentModificationDateKey])
+                        .contentModificationDate) ?? .distantPast
+                guard Date().timeIntervalSince(modified) > 3600 else { continue }
+            }
+            try? FileManager.default.removeItem(at: directory)
+            swept += 1
+        }
+        if swept > 0 {
+            print("removed \(swept) leftover runtime director\(swept == 1 ? "y" : "ies")")
+        }
+        return swept
     }
 
     /// Disk actually occupied by a directory tree.

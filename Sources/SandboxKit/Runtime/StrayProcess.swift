@@ -14,6 +14,7 @@ public struct StrayProcess: Sendable, Equatable {
     }
 
     public var pid: Int32
+    public var ppid: Int32
     public var kind: Kind
     public var directory: String
 }
@@ -24,17 +25,31 @@ extension StrayProcess {
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> [StrayProcess] {
         parse(processListing()).filter {
-            // A live sandbox always has its runtime directory. Its absence is
-            // the whole basis for calling a process an orphan.
-            $0.pid != ProcessInfo.processInfo.processIdentifier && !fileExists($0.directory)
+            $0.pid != ProcessInfo.processInfo.processIdentifier && isStray($0, fileExists)
         }
     }
 
-    /// `ps -axo pid=,command=`, or empty if it cannot be run.
+    /// Whether one of our processes has outlived the run it belonged to.
+    ///
+    /// Two distinct signs. A runtime directory that no longer exists: a live
+    /// sandbox always has one, so its absence is decisive for either kind.
+    /// And, for a gateway only, a parent of 1: the gateway is spawned as a
+    /// direct child of the CLI or the supervisor and is reparented to init
+    /// only when that owner died without stopping it -- a run killed with ^C
+    /// twice, a timeout, a crash. Sixteen of these were found running on the
+    /// development machine, the oldest for two days, each still holding its
+    /// runtime directory, which is why the directory test alone missed them.
+    /// A supervisor at ppid 1 is NOT stray: detaching is its whole design.
+    static func isStray(_ process: StrayProcess, _ fileExists: (String) -> Bool) -> Bool {
+        if !fileExists(process.directory) { return true }
+        return process.kind == .gateway && process.ppid == 1
+    }
+
+    /// `ps -axo pid=,ppid=,command=`, or empty if it cannot be run.
     static func processListing() -> String {
         let listing = Process()
         listing.executableURL = URL(filePath: "/bin/ps")
-        listing.arguments = ["-axo", "pid=,command="]
+        listing.arguments = ["-axo", "pid=,ppid=,command="]
         let pipe = Pipe()
         listing.standardOutput = pipe
         listing.standardError = FileHandle.nullDevice
@@ -61,7 +76,12 @@ extension StrayProcess {
             let pid = Int32(text[text.startIndex..<space]), pid > 0
         else { return nil }
 
-        let command = String(text[space...]).trimmingCharacters(in: .whitespaces)
+        let afterPid = String(text[space...]).trimmingCharacters(in: .whitespaces)
+        guard let secondSpace = afterPid.firstIndex(of: " "),
+            let ppid = Int32(afterPid[afterPid.startIndex..<secondSpace]), ppid >= 0
+        else { return nil }
+
+        let command = String(afterPid[secondSpace...]).trimmingCharacters(in: .whitespaces)
         let arguments = command.split(separator: " ", maxSplits: 1)
         guard let executable = arguments.first else { return nil }
         let program = URL(filePath: String(executable)).lastPathComponent
@@ -82,7 +102,7 @@ extension StrayProcess {
             let range = command.range(
                 of: "/tmp/sandbox-[A-Za-z0-9_.-]+", options: .regularExpression)
         else { return nil }
-        return StrayProcess(pid: pid, kind: kind, directory: String(command[range]))
+        return StrayProcess(pid: pid, ppid: ppid, kind: kind, directory: String(command[range]))
     }
 }
 
