@@ -99,8 +99,21 @@ public actor AgentPreparer {
                 // exit() does not unwind, so the defer below that removes the
                 // half-built rootfs never runs. Left alone, every interrupted
                 // build keeps a few hundred MB of a rootfs nobody will finish.
-                for directory in buildDirectories {
-                    try? FileManager.default.removeItem(at: directory)
+                // Removal races whatever the interrupt caught mid-write --
+                // an image unpack recreates the path right after a single
+                // remove, which is how an interrupted build was once found
+                // still holding its half-built rootfs. Removing again after a
+                // pause wins against a writer that is itself shutting down.
+                for attempt in 1...3 {
+                    for directory in buildDirectories {
+                        try? FileManager.default.removeItem(at: directory)
+                    }
+                    if buildDirectories.allSatisfy({
+                        !FileManager.default.fileExists(atPath: $0.path)
+                    }) {
+                        break
+                    }
+                    if attempt < 3 { try? await Task.sleep(for: .milliseconds(400)) }
                 }
                 Darwin.exit(130)  // 128 + SIGINT, what a shell reports for Ctrl-C.
             }
