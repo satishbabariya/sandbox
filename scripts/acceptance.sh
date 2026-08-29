@@ -256,6 +256,18 @@ check "an installed CLI finds its own gateway" "FETCHED" "$out"
 out=$(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox doctor 2>&1)
 check "and doctor inspects the binary that is running" \
   "com.apple.security.virtualization present" "$out"
+
+# The third place argv[0] was read: detaching re-execs the CLI as
+# "sandbox supervise". Found on PATH that resolved to the current directory,
+# so a detached sandbox could never come up for an installed CLI.
+DETACHED="acceptance-installed-detach"
+(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox run --detach --name "$DETACHED" \
+  "$IMAGE" -- /bin/sh -c 'sleep 120') >/dev/null 2>&1
+out=$(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox exec "$DETACHED" -- \
+  /bin/echo SUPERVISED 2>&1)
+check "an installed CLI supervises a detached sandbox" "SUPERVISED" "$out"
+(cd "$HOME" && PATH="$INSTALL_DIR/bin:$PATH" sandbox rm --force "$DETACHED") >/dev/null 2>&1
+
 rm -rf "$INSTALL_DIR"
 
 echo "== abandoned state can be reclaimed =="
