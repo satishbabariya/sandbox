@@ -129,6 +129,9 @@ public struct LaunchSpec: Codable, Sendable, Equatable {
         if let workspace {
             spec.workspace = URL(filePath: workspace)
         }
+        if let agent {
+            spec.stateDirectory = SandboxPaths().agentState(agent)
+        }
         return spec
     }
 

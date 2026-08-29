@@ -14,7 +14,7 @@ struct AgentsCommand: AsyncParsableCommand {
             """,
         subcommands: [
             AgentsList.self, AgentsShow.self, AgentsEdit.self, AgentsRemove.self,
-            AgentsCache.self,
+            AgentsCache.self, AgentsReset.self,
         ],
         defaultSubcommand: AgentsList.self
     )
@@ -171,5 +171,31 @@ struct AgentsRemove: AsyncParsableCommand {
         } else {
             print("removed '\(name)'")
         }
+    }
+}
+
+struct AgentsReset: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "reset",
+        abstract: "Discard an agent's saved state; the next run re-seeds it from your own config.",
+        discussion: """
+            An agent keeps its own copy of its configuration -- what it was \
+            seeded with from your home directory, plus everything it has \
+            saved since. Resetting deletes that copy. Nothing of yours is \
+            touched; the next run starts from your current config again.
+            """
+    )
+
+    @Argument(help: "Agent name.")
+    var name: String
+
+    func run() async throws {
+        let state = SandboxPaths().agentState(name)
+        guard FileManager.default.fileExists(atPath: state.path) else {
+            print("'\(name)' has no saved state")
+            return
+        }
+        try FileManager.default.removeItem(at: state)
+        print("reset '\(name)'; the next run re-seeds from your config")
     }
 }

@@ -119,6 +119,18 @@ extension Sandbox {
             for item in .claude .claude.json .codex .gemini .config .mcp.json; do
               [ -e "/root/$item" ] && cp -a "/root/$item" "$HOME_DIR/" 2>/dev/null
             done
+            # State links are re-pointed rather than listed by name: a custom
+            # agent may keep state under any dotfile, and the hardcoded list
+            # above cannot know it. -f so a stale copy of the same name from
+            # the list above is replaced by the link, which is the live one.
+            for link in /root/. /root/..* /root/.[!.]* /root/*; do
+              [ -L "$link" ] || continue
+              case "$(readlink "$link")" in
+                /sandbox-state/*)
+                  ln -sfn "$(readlink "$link")" "$HOME_DIR/${link##*/}" 2>/dev/null || true
+                  ;;
+              esac
+            done
             chown -R "$TARGET_UID" "$HOME_DIR" 2>/dev/null || true
             \(workspaceOwnership)
             # Installing packages is a normal thing for an agent to do, and it
@@ -132,8 +144,13 @@ extension Sandbox {
             fi
             export HOME="$HOME_DIR"
             export USER="$RUN_AS"
-            # setpriv wants numeric ids, not names.
-            if command -v setpriv >/dev/null 2>&1; then
+            # setpriv wants numeric ids, not names. Probed by running it, not
+            # by its presence: busybox ships a setpriv with none of these
+            # options, so an alpine-based agent found it, failed on the flags,
+            # and never ran at all.
+            if command -v setpriv >/dev/null 2>&1 \
+              && setpriv --reuid="$TARGET_UID" --regid="$TARGET_GID" \
+                --init-groups --inh-caps=-all true 2>/dev/null; then
               exec setpriv --reuid="$TARGET_UID" --regid="$TARGET_GID" \
                 --init-groups --inh-caps=-all "$@"
             elif command -v su-exec >/dev/null 2>&1; then
@@ -148,6 +165,41 @@ extension Sandbox {
     }
 
     static let cloneSourceDirectory = "/sandbox-source"
+
+    /// Where the agent's persistent state home is mounted in the guest.
+    static let guestStateDirectory = "/sandbox-state"
+
+    /// Point each declared destination at its item in the mounted state home,
+    /// then exec.
+    ///
+    /// Symlinks rather than copies, which is the entire point: the previous
+    /// design copied ~/.claude -- 700 MB, 14k files -- through virtiofs into
+    /// the guest at every start, 45 seconds before the agent ran anything,
+    /// and threw the result away at exit. A symlink into the share is
+    /// instant, and writes through it land in the state home and persist.
+    ///
+    /// Runs as root, before the privilege drop. The drop's own copy step then
+    /// finds symlinks at /root/.claude and friends and copies the links, not
+    /// the trees behind them.
+    static func stateBootstrap(
+        wrapping command: [String], links: [(destination: String, target: String)]
+    ) -> [String] {
+        guard !command.isEmpty, !links.isEmpty else { return command }
+        let script =
+            links.map { link in
+                let destination = shellQuote(link.destination)
+                let parent = shellQuote((link.destination as NSString).deletingLastPathComponent)
+                let target = shellQuote(link.target)
+                // -n so a destination that exists as a directory (an image that
+                // ships its own /root/.claude) is replaced, not descended into.
+                return """
+                    mkdir -p \(parent)
+                    rm -rf \(destination)
+                    ln -sn \(target) \(destination)
+                    """
+            }.joined(separator: "\n") + "\nexec \"$@\""
+        return ["/bin/sh", "-c", script, "sandbox"] + command
+    }
 
     /// Clone the read-only source into a writable workspace, then exec.
     ///

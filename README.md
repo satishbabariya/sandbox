@@ -583,7 +583,8 @@ disagreed with the enforcement point would be worse than no CLI.
 
 ## Status
 
-**Working:** agent profiles with cached environments, enforced egress (DNS, dial, ICMP
+**Working:** agent profiles with cached environments and persistent agent
+state, enforced egress (DNS, dial, ICMP
 and SNI gates), policy audit log, named persistent sandboxes (`run --detach`,
 `exec`, `ls`, `stop`, `rm`, `logs`, `prune`), `cp`, published ports, credential
 brokering via the Keychain, a private dockerd per sandbox, workspace and
