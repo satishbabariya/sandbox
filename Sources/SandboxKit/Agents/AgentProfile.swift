@@ -264,8 +264,29 @@ extension AgentProfile {
             // Claude Code reads .claude.json as a file beside the directory,
             // not inside it.
             mounts: ["~/.claude:/root/.claude:state", "~/.claude.json:/root/.claude.json:state"],
+            // A sandbox is not a place that updates itself: its environment
+            // is a cached build, replaced with --rebuild, and an updater
+            // that did succeed would be thrown away with the rootfs. Left on
+            // it cannot succeed anyway -- the npm tree is root's -- and says
+            // so in the status screen every session.
+            environment: ["DISABLE_AUTOUPDATER": "1"],
             mcpConfigPath: "/root/.mcp.json",
-            runAsUser: "agent"
+            runAsUser: "agent",
+            // The state seeded from the host references the host's native
+            // install at ~/.local/bin/claude; without this the status screen
+            // reports that path as missing or broken in every session.
+            startup: [
+                StartupCommand(argv: [
+                    "/bin/sh", "-c",
+                    """
+                    for h in /home/* /root; do
+                      [ -d "$h" ] || continue
+                      mkdir -p "$h/.local/bin"
+                      ln -sfn "$(command -v claude)" "$h/.local/bin/claude" 2>/dev/null || true
+                    done
+                    """,
+                ])
+            ]
         ),
         AgentProfile(
             name: "codex",
