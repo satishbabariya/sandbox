@@ -185,9 +185,23 @@ Being wrong about this is worse than not shipping it.
 
 ## Install
 
-Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+.
+Requires Apple silicon and macOS 26. Building needs Xcode 26 and Go 1.25.6+ —
+but installing does not: the release archives carry the signed binaries.
 
-From a [release](https://github.com/satishbabariya/sandbox/releases/latest):
+The quick way:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/satishbabariya/sandbox/main/install.sh | sh
+$ sandbox kernel install   # guest kernel, ~280 MiB, once
+$ sandbox doctor           # checks everything at once
+```
+
+It verifies the release checksum before installing, puts the binaries in
+`~/.local/bin` (override with `SANDBOX_INSTALL_DIR`), and re-running it
+upgrades. Pin a version with `SANDBOX_VERSION=v0.1.4`. Read it first if you
+like — it is a page of POSIX sh.
+
+By hand, from a [release](https://github.com/satishbabariya/sandbox/releases/latest):
 
 ```console
 $ gh release download --repo satishbabariya/sandbox --pattern 'sandbox-*'
