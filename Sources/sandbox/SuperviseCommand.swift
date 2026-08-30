@@ -22,8 +22,13 @@ struct SuperviseCommand: AsyncParsableCommand {
     var spec: String
 
     func run() async throws {
+        // First thing, before any work: a supervisor that wedges during boot
+        // used to leave an empty log, which made a ten-minute launch stall
+        // impossible to attribute. Every phase below says when it happened.
+        FileHandle.standardError.write(Data("supervise: reading spec \(spec)\n".utf8))
         let data = try Data(contentsOf: URL(filePath: spec))
         let launch = try JSONDecoder().decode(LaunchSpec.self, from: data)
+        FileHandle.standardError.write(Data("supervise: booting '\(launch.name)'\n".utf8))
 
         let paths = SandboxPaths()
         let store = SandboxStore(paths: paths)
@@ -44,6 +49,7 @@ struct SuperviseCommand: AsyncParsableCommand {
         )
 
         try await sandbox.start(gatewayBinary: InstallLayout.gatewayBinary())
+        FileHandle.standardError.write(Data("supervise: '\(launch.name)' is up\n".utf8))
 
         var record = launch.record
         record.supervisorPID = ProcessInfo.processInfo.processIdentifier
@@ -59,6 +65,16 @@ struct SuperviseCommand: AsyncParsableCommand {
 
         let socketPath = ControlClient.path(for: launch.name, paths: paths)
         let shutdown = ShutdownSignal()
+
+        // The sandbox ends when the command it was started with ends, the way
+        // a container does. Without this, nothing noticed the exit: the
+        // record said "running" for as long as the supervisor lived, and an
+        // exec against the dead init failed with a vmexec error instead of
+        // "not running".
+        let mainProcess = Task {
+            _ = try? await sandbox.wait()
+            await shutdown.signal()
+        }
 
         let server = ControlServer(path: socketPath) { request, client in
             switch request {
@@ -186,6 +202,7 @@ struct SuperviseCommand: AsyncParsableCommand {
 
         await shutdown.wait()
 
+        mainProcess.cancel()
         serveTask.cancel()
         server.stop()
         await sandbox.stop()
