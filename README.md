@@ -142,6 +142,24 @@ The dockerd row matters for a different reason — a container started *inside* 
 sandbox inherits the policy with nothing extra wired up, because it is behind the
 same single interface.
 
+## What a sandbox costs
+
+Measured on an M-series machine, three sandboxes running side by side:
+
+- **Host processes: ~60 MB resident per sandbox** — a supervisor (~37 MB,
+  which also holds the VM) and its gateway (~24 MB). Three sandboxes cost
+  three times that, nothing shared, nothing growing.
+- **Guest memory** is capped by `--memory` (default 4 GiB) and committed by
+  the hypervisor as the workload touches it, not up front.
+- **Marginal disk: 0 MB.** A sandbox's rootfs is an APFS copy-on-write clone
+  of the cached environment — 8 GB apparent, and starting one was measured
+  to reduce free space by nothing. Only what the sandbox writes is new
+  storage.
+- **Warm start: about half a second** from `sandbox run` to the command
+  executing. A fresh agent build (image already pulled) is ~20 s.
+- **Latency**: the gateway adds no measurable overhead — the same fetch
+  through the sandbox and directly on the host both measure 1.6 s.
+
 ## Concurrency and isolation
 
 Sandboxes run side by side. Each gets its own gateway, its own policy, its own
