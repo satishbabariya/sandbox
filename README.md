@@ -461,9 +461,15 @@ gateway — no daemon to manage, and no shared component between sandboxes.
 
 ```console
 $ sandbox kit inspect ./aider                  # what it would become
-$ sandbox kit inspect ./aider --with ./neovim  # with a mixin layered on
+$ sandbox kit inspect ./aider --with ./task    # with a mixin layered on
 $ sandbox kit import ./aider                   # then: sandbox run aider
+$ sandbox kit import ./code-server             # a mixin that names its agent
 ```
+
+A mixin that declares `requires.agent` imports straight onto that agent:
+`code-server` names `claude`, so importing it produces a composed agent —
+web VS Code with Claude Code, `sandbox run -p 8080 code-server`. `--onto`
+overrides the target.
 
 Kits are the extension format `sbx` uses, and there is a body of existing ones.
 `sandbox` reads a faithful subset and **reports what it cannot honour** rather

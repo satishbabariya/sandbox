@@ -27,8 +27,33 @@ struct KitInspect: AsyncParsableCommand {
     @Option(name: .long, help: "Layer a mixin kit on top; repeatable.")
     var with: [String] = []
 
+    @Option(
+        name: .long,
+        help: """
+            Show this kit, itself a mixin, layered onto an existing agent. \
+            Defaults to the agent the mixin's requires.agent names.
+            """)
+    var onto: String?
+
     func run() async throws {
-        let translation = try KitInspect.translate(path, mixins: with)
+        let spec = try KitInspect.loadSpec(path)
+        let translation: KitTranslation
+        if spec.kind == "mixin" {
+            if let baseName = onto ?? spec.requires?.agent {
+                let base = try AgentRegistry().profile(named: baseName)
+                translation = try KitComposer.compose(
+                    onto: base, mixins: [spec] + with.map(KitInspect.loadSpec))
+                print("(layered onto '\(baseName)')")
+            } else {
+                // No affinity: show what the mixin would contribute, so its
+                // author can still see the translation without inventing a
+                // base to hang it on.
+                translation = try KitComposer.translateMixin(spec)
+                print("(a mixin with no requires.agent; shown alone -- layer it with --onto or --with)")
+            }
+        } else {
+            translation = try KitInspect.translate(path, mixins: with)
+        }
         let profile = translation.profile
 
         print("name:        \(profile.name)")
