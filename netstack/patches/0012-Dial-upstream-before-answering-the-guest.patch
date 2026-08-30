@@ -1,0 +1,160 @@
+From: sandbox
+Subject: [PATCH] Dial upstream before answering the guest
+
+The SNI path completed the guest's TCP handshake first and dialed
+upstream only after reading the ClientHello. Answering the guest tells
+its TCP stack the connection succeeded, so a client that would try the
+next address of a multi-homed host -- every CDN -- never does: it sits
+on a "connected" socket that goes nowhere. With one of GitHub's four
+release-asset addresses blackholed on the local network, every download
+from that host hung inside the sandbox while the same URL worked on the
+host, whose clients saw the failed connect and moved on to the next
+address.
+
+Dial upstream first, bounded, and answer a failed dial with a RST --
+exactly the signal address fallback needs. The plain-forward path gets
+the same bound in place of a dial that held the SYN for the OS's
+75 seconds. A guest that never sends its ClientHello no longer holds
+the pre-dialed upstream open forever, and a brokered connection still
+dials for itself, verified against the name.
+
+---
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index 1846459..32ca107 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -6,6 +6,8 @@ import (
+ 	"net"
+ 	"sync"
+ 
++	"time"
++
+ 	"github.com/containers/gvisor-tap-vsock/pkg/broker"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/policy"
+ 	"github.com/containers/gvisor-tap-vsock/pkg/sni"
+@@ -59,18 +61,36 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 			ip := net.IP(localAddress.AsSlice())
+ 			dialAddress := net.JoinHostPort(localAddress.String(), fmt.Sprint(port))
+ 
++			// Upstream first, guest second. Answering the guest before the
++			// upstream exists tells its TCP stack the connection succeeded,
++			// so a client that would try the next address of a multi-homed
++			// host -- every CDN -- never does: it sits on a "connected"
++			// socket that goes nowhere. A dead CDN address then hung every
++			// download instead of costing one fast retry. The dial is
++			// bounded, and failure answers the SYN with a RST, which is
++			// exactly the signal address fallback needs.
++			upstream, err := net.DialTimeout("tcp", dialAddress, upstreamDialTimeout)
++			if err != nil {
++				log.Debugf("net.DialTimeout(%s) = %v", dialAddress, err)
++				r.Complete(true)
++				return
++			}
++
+ 			var wq waiter.Queue
+ 			ep, tcpErr := r.CreateEndpoint(&wq)
+ 			r.Complete(false)
+ 			if tcpErr != nil {
+ 				log.Debugf("r.CreateEndpoint() = %v", tcpErr)
++				upstream.Close()
+ 				return
+ 			}
+-			go inspectAndForward(gonet.NewTCPConn(&wq, ep), ip, port, dialAddress, pol, brk)
++			go inspectAndForward(gonet.NewTCPConn(&wq, ep), upstream, ip, port, pol, brk)
+ 			return
+ 		}
+ 
+-		outbound, err := net.Dial("tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)))
++		outbound, err := net.DialTimeout(
++			"tcp", net.JoinHostPort(localAddress.String(), fmt.Sprint(r.ID().LocalPort)),
++			upstreamDialTimeout)
+ 		if err != nil {
+ 			log.Tracef("net.Dial() = %v", err)
+ 			r.Complete(true)
+@@ -99,31 +119,46 @@ func TCP(s *stack.Stack, nat map[tcpip.Address]tcpip.Address, natLock *sync.Mute
+ 	})
+ }
+ 
++// How long the gateway waits for an upstream to answer a SYN. Long enough for
++// a slow host, short enough that a client walking a CDN's address list gets
++// its RST while it still cares.
++const upstreamDialTimeout = 8 * time.Second
++
++// How long a connected guest gets to send its ClientHello before the upstream
++// held open for it is released.
++const clientHelloTimeout = 15 * time.Second
++
+ // inspectAndForward reads the ClientHello, applies policy to the name it
+ // advertises, and either splices the connection upstream or drops it.
+ //
+ // The peeked bytes are replayed verbatim, so the server sees the handshake the
+ // guest sent. Nothing is decrypted and no certificate is involved.
+ func inspectAndForward(
+-	guest net.Conn, ip net.IP, port uint16, dialAddress string,
++	guest net.Conn, upstream net.Conn, ip net.IP, port uint16,
+ 	pol *policy.Engine, brk *broker.Broker,
+ ) {
+ 	defer guest.Close()
+ 
++	// The upstream is already connected; a guest that never sends its
++	// ClientHello must not hold it open forever.
++	guest.SetReadDeadline(time.Now().Add(clientHelloTimeout))
+ 	name, consumed, err := sni.PeekServerName(guest)
++	guest.SetReadDeadline(time.Time{})
+ 	if err != nil && name == "" {
+ 		// Not TLS, or no name to check. The dial check already allowed this
+ 		// address, so forward what we read and splice the rest.
+ 		if len(consumed) == 0 {
++			upstream.Close()
+ 			return
+ 		}
+-		spliceWithPrefix(guest, dialAddress, consumed)
++		spliceWithPrefix(guest, upstream, consumed)
+ 		return
+ 	}
+ 
+ 	if v := pol.AllowSNI(name, port); !v.Allowed {
+ 		log.Debugf("policy: refused tls %s (%s) to %s", name, v.Reason, ip)
+ 		pol.RecordSNI("tcp", ip, port, v)
++		upstream.Close()
+ 		return
+ 	}
+ 
+@@ -131,16 +166,20 @@ func inspectAndForward(
+ 	// substitute it. Replay the ClientHello into it so its handshake sees the
+ 	// stream from the start.
+ 	if brk.Intercepts(name) {
++		// The broker dials and verifies upstream itself, against the name;
++		// the plain connection is not its to use.
++		upstream.Close()
+ 		replayed := &prefixConn{Conn: guest, prefix: consumed}
+ 		if err := brk.Handle(replayed, name, func() (net.Conn, error) {
+-			return net.Dial("tcp", dialAddress)
++			return net.DialTimeout(
++				"tcp", net.JoinHostPort(ip.String(), fmt.Sprint(port)), upstreamDialTimeout)
+ 		}); err != nil {
+ 			log.Infof("broker: %s: %v", name, err)
+ 		}
+ 		return
+ 	}
+ 
+-	spliceWithPrefix(guest, dialAddress, consumed)
++	spliceWithPrefix(guest, upstream, consumed)
+ }
+ 
+ // prefixConn replays bytes already read from the connection before continuing
+@@ -165,13 +204,7 @@ func (c *prefixConn) Read(b []byte) (int, error) {
+ //
+ // Reusing tcpproxy here rather than copying by hand: getting half-close and
+ // teardown right matters, and this path already had a working implementation.
+-func spliceWithPrefix(guest net.Conn, dialAddress string, prefix []byte) {
+-	upstream, err := net.Dial("tcp", dialAddress)
+-	if err != nil {
+-		log.Tracef("net.Dial() = %v", err)
+-		return
+-	}
+-
++func spliceWithPrefix(guest net.Conn, upstream net.Conn, prefix []byte) {
+ 	if len(prefix) > 0 {
+ 		if _, err := upstream.Write(prefix); err != nil {
+ 			upstream.Close()

@@ -6,6 +6,18 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A download could hang forever when one address of a multi-homed host was
+  unreachable. The gateway answered the guest's connect before its own
+  upstream connection existed, so the client sat on a "connected" socket that
+  went nowhere instead of trying the host's next address — with one of
+  GitHub's four release-asset addresses blackholed by the local network,
+  every `uv`, `wget` and `fetch` against that host stalled inside the sandbox
+  while the same URL worked on the host. The gateway now dials upstream
+  first, bounded to 8 seconds, and answers a failed dial with the reset that
+  address fallback needs.
+
 ## [0.1.5] — 2026-08-30
 
 ### Added
