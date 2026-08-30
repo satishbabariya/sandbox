@@ -6,8 +6,14 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-08-30
+
 ### Added
 
+- `kit inspect` previews a mixin the way `import` composes it — layered onto
+  the agent its `requires.agent` names, or standalone with a label when it
+  names none. All 41 kits in `docker/sbx-kits-contrib` now inspect without an
+  error.
 - A mixin now imports directly onto the agent it belongs to. `sandbox kit
   import code-server` reads the mixin's `requires.agent: claude`, layers it
   onto the built-in claude agent, and produces a runnable composed agent —
