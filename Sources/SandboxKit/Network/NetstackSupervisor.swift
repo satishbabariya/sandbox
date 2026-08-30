@@ -134,11 +134,27 @@ public actor NetstackSupervisor {
         try renderConfiguration().write(to: configFile, atomically: true, encoding: .utf8)
 
         let proc = Process()
-        proc.executableURL = binary
-        proc.arguments = [
-            "-config", configFile.path,
-            "-listen-vfkit", "unixgram://\(gatewaySocket.path)",
-        ]
+        // EXPERIMENT: run the pure-Swift gateway (swift-netstack) in place of
+        // the patched Go one. No policy is enforced on this path -- it exists
+        // to answer one question: does a real guest boot, lease, resolve and
+        // carry TCP through the Swift stack. Not for real use.
+        if let swiftGateway = ProcessInfo.processInfo.environment["SANDBOX_SWIFT_GATEWAY"] {
+            FileHandle.standardError.write(
+                Data("sandbox: EXPERIMENT swift gateway, NO EGRESS POLICY ENFORCED\n".utf8))
+            proc.executableURL = URL(filePath: swiftGateway)
+            proc.arguments = [
+                "--listen-vfkit", gatewaySocket.path,
+                "--dns", "1.1.1.1:53",
+                "--log-level", "debug",
+                "--pcap", config.runtimeDirectory.appending(path: "wire.pcap").path,
+            ]
+        } else {
+            proc.executableURL = binary
+            proc.arguments = [
+                "-config", configFile.path,
+                "-listen-vfkit", "unixgram://\(gatewaySocket.path)",
+            ]
+        }
         let logHandle = try openLog()
         proc.standardOutput = logHandle
         proc.standardError = logHandle
