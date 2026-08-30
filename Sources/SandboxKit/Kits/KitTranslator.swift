@@ -14,6 +14,12 @@ public struct KitTranslation: Sendable {
     public var unsupported: [String]
 
     public var hasWarnings: Bool { !notes.isEmpty || !unsupported.isEmpty }
+
+    public init(profile: AgentProfile, notes: [String] = [], unsupported: [String] = []) {
+        self.profile = profile
+        self.notes = notes
+        self.unsupported = unsupported
+    }
 }
 
 public enum KitTranslator {
@@ -277,8 +283,9 @@ public enum KitError: Error, CustomStringConvertible {
             // nothing to run it as. It has to be layered onto a sandbox kit,
             // which is what --with does.
             return """
-                '\(name)' is a mixin: it adds to a sandbox kit rather than being one
-                layer it onto a sandbox kit with: sandbox kit inspect <sandbox-kit> --with \(name)
+                '\(name)' is a mixin: it adds to an agent rather than being one
+                layer it onto the agent it belongs to:  sandbox kit import \(name) --onto <agent>
+                or onto a sandbox kit:                  sandbox kit import <sandbox-kit> --with \(name)
                 """
         case .notFound(let url):
             return "no spec.yaml at \(url.path)"

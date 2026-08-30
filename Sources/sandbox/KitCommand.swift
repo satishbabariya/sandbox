@@ -106,11 +106,19 @@ struct KitImport: AsyncParsableCommand {
     @Option(name: .long, help: "Layer a mixin kit on top; repeatable.")
     var with: [String] = []
 
+    @Option(
+        name: .long,
+        help: """
+            Layer this kit, itself a mixin, onto an existing agent. \
+            Defaults to the agent the mixin's requires.agent names.
+            """)
+    var onto: String?
+
     @Flag(name: .shortAndLong, help: "Overwrite an existing profile of that name.")
     var force: Bool = false
 
     func run() async throws {
-        var translation = try KitInspect.translate(path, mixins: with)
+        var translation = try Self.translateForImport(path, mixins: with, onto: onto)
         if let name {
             try SandboxStore.validate(name: name)
             translation.profile.name = name
@@ -129,5 +137,30 @@ struct KitImport: AsyncParsableCommand {
         KitInspect.report(translation)
         print("")
         print("run it with: sandbox run \(translation.profile.name)")
+    }
+
+    /// A sandbox kit translates as itself; a mixin composes onto the agent it
+    /// belongs to. `requires.agent` is the mixin saying which one that is --
+    /// code-server names claude -- so importing it alone does the layering
+    /// its author described, and --onto overrides the target.
+    static func translateForImport(
+        _ path: String, mixins: [String], onto: String?
+    ) throws -> KitTranslation {
+        let spec = try KitInspect.loadSpec(path)
+        guard spec.kind == "mixin" else {
+            return try KitInspect.translate(path, mixins: mixins)
+        }
+        guard let baseName = onto ?? spec.requires?.agent else {
+            // A mixin with no affinity has nothing to land on by itself.
+            throw KitError.mixinNotSupported(spec.name)
+        }
+        let base = try AgentRegistry().profile(named: baseName)
+        var translation = try KitComposer.compose(
+            onto: base, mixins: [spec] + mixins.map(KitInspect.loadSpec))
+        // The composed agent is a new thing; without a distinct name it would
+        // shadow the base it was layered onto.
+        translation.profile.name = spec.name
+        translation.profile.displayName = spec.displayName ?? spec.name
+        return translation
     }
 }
