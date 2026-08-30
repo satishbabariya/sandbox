@@ -1131,6 +1131,16 @@ $B secret rm selftest >/dev/null 2>&1
 $B agents rm acceptkit >/dev/null 2>&1
 check_absent "an imported kit can be removed again" "acceptkit" "$($B agents ls 2>&1)"
 
+# A mixin composes onto the agent its requires.agent names -- code-server
+# onto claude is the real-world shape. The composed agent carries the base's
+# behaviour plus the mixin's own install and variables.
+"$B" kit import testdata/kits/selfmix --force >/dev/null 2>&1
+out=$("$B" run selfmix --no-tty -- /bin/sh -c 'selfmix-tool; echo "MARK=$SELFMIX_MARKER"' 2>&1)
+check "a mixin imports onto the agent it names" "SELFMIX_TOOL_OK" "$out"
+check "and its environment is layered in" "MARK=layered-onto-agent" "$out"
+"$B" agents rm selfmix >/dev/null 2>&1
+rm -rf "$HOME/.sandbox/cache/agents/selfmix"* 2>/dev/null || true
+
 echo "== every built-in agent starts =="
 
 # Three of the five shipped agents had never been run, so nothing said whether

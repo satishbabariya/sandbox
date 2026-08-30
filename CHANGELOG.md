@@ -6,6 +6,14 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Added
+
+- A mixin now imports directly onto the agent it belongs to. `sandbox kit
+  import code-server` reads the mixin's `requires.agent: claude`, layers it
+  onto the built-in claude agent, and produces a runnable composed agent —
+  web VS Code with Claude Code, served on a published port. `--onto <agent>`
+  overrides the target.
+
 ## [0.1.6] — 2026-08-30
 
 ### Fixed

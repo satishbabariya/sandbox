@@ -1,0 +1,17 @@
+# A mixin that composes onto an existing agent, the way code-server composes
+# onto claude. Self-contained: nothing fetched, so the case tests the
+# layering, not the network.
+schemaVersion: "2"
+kind: mixin
+name: selfmix
+displayName: Mixin-onto-agent self test
+description: Proves a mixin layers onto a named agent.
+requires:
+  agent: shell
+environment:
+  variables:
+    SELFMIX_MARKER: layered-onto-agent
+setup:
+  install:
+    - command: printf '#!/bin/sh\necho SELFMIX_TOOL_OK\n' > /usr/local/bin/selfmix-tool && chmod +x /usr/local/bin/selfmix-tool
+      user: "0"

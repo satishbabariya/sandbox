@@ -45,6 +45,33 @@ public enum KitComposer {
         return result
     }
 
+    /// Compose mixins onto an existing agent — a built-in like claude, or an
+    /// agent already imported. This is what a mixin's `requires.agent` names:
+    /// code-server declares it belongs on the claude agent, and layering it
+    /// there is the whole point of the kit.
+    public static func compose(
+        onto base: AgentProfile,
+        mixins: [KitSpec]
+    ) throws -> KitTranslation {
+        var result = KitTranslation(profile: base)
+
+        for mixin in mixins {
+            guard mixin.kind == "mixin" else {
+                throw KitError.notAMixin(mixin.name)
+            }
+            if let required = mixin.requires?.agent, required != base.name {
+                result.notes.append(
+                    "mixin '\(mixin.name)' declares requires.agent: \(required), "
+                        + "but is being layered onto '\(base.name)'")
+            }
+            let layer = try translateMixin(mixin)
+            result.profile = merge(result.profile, layer.profile)
+            result.notes += layer.notes.map { "[\(mixin.name)] \($0)" }
+            result.unsupported += layer.unsupported.map { "[\(mixin.name)] \($0)" }
+        }
+        return result
+    }
+
     /// A mixin has no image, so it cannot go through the sandbox translator.
     /// This reads the same sections and leaves the image blank.
     static func translateMixin(_ spec: KitSpec) throws -> KitTranslation {
