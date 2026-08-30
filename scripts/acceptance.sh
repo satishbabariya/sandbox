@@ -950,7 +950,7 @@ check "an untagged reference defaults to latest" "UNTAGGED_RAN" "$out"
 # A mistyped agent name is treated as an image, so without this the answer is
 # whatever the registry says about an image nobody meant to pull.
 out=$($B run notanagent-notanimage --no-tty -- /bin/true 2>&1)
-check "a name that is neither agent nor image lists the agents" "agents: claude" "$out"
+check "a name that is neither agent nor image lists the agents" "agents: .*claude" "$out"
 check "and says it looked for an image too" "treated as an image" "$out"
 
 echo "== kit instructions reach a clone, never your tree =="

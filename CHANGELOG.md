@@ -8,6 +8,21 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ### Fixed
 
+- Kits from Docker's own template images did not actually work. Those images
+  bake in `USER agent`, which silently made every root-assuming bootstrap —
+  the CA trust store, kit startup commands, `/etc/hosts` — run unprivileged
+  and fail, several of them into `2>/dev/null`. Kit-imported agents now use
+  sandbox's own privilege drop like the built-ins: the container starts as
+  root, the bootstraps do their work, and the agent runs as the image's
+  unprivileged user.
+- A kit install step's `user:` declaration was ignored, so `uv tool install`
+  ran as root and put the tool in `/root/.local` — where the kit's entrypoint
+  never looks and the agent cannot follow. Steps naming an unprivileged user
+  now run as the same identity the agent gets at runtime. Startup steps
+  honour `user:` the same way.
+
+### Fixed
+
 - A download could hang forever when one address of a multi-homed host was
   unreachable. The gateway answered the guest's connect before its own
   upstream connection existed, so the client sat on a "connected" socket that
