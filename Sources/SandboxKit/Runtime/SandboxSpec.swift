@@ -23,6 +23,9 @@ public struct SandboxSpec: Sendable {
     /// Where mounts marked `state` keep their persistent copies. Set when the
     /// sandbox runs an agent; a state mount without it cannot be honoured.
     public var stateDirectory: URL?
+    /// Secrets resolved by the launching process, for a supervisor that
+    /// cannot reach the keychain itself.
+    public var presetBroker: BrokerConfiguration?
     /// Give the agent a private git clone instead of your working tree.
     public var cloneWorkspace: Bool
     /// MCP servers to declare to the agent, and where to write the file.

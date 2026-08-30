@@ -485,8 +485,33 @@ struct RunCommand: AsyncParsableCommand {
         let log = try FileHandle(forWritingTo: logPath)
         process.standardOutput = log
         process.standardError = log
-        process.standardInput = FileHandle.nullDevice
+
+        // Secrets are resolved here, in the user's own security session, and
+        // handed over on stdin. The detached supervisor cannot read the
+        // keychain -- it lives outside that session -- which used to mean a
+        // detached agent simply got no credentials, and its first API call
+        // answered 401. stdin rather than the spec file or the environment:
+        // the spec file is something a debugging user will cat, and the
+        // environment of a process is readable with ps.
+        let secrets = Pipe()
+        process.standardInput = secrets
+        let (resolved, missing, expired) = BrokerConfiguration.resolve(
+            bindings: launch.bindings)
+        for service in missing {
+            let line =
+                "sandbox: no credential for '\(service)'; "
+                + "set one with 'sandbox secret set \(service)'\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        for service in expired {
+            FileHandle.standardError.write(
+                Data("sandbox: the sign-in for '\(service)' has expired; renew it on the host\n".utf8))
+        }
         try process.run()
+        if !resolved.credentials.isEmpty {
+            try secrets.fileHandleForWriting.write(contentsOf: JSONEncoder().encode(resolved))
+        }
+        try secrets.fileHandleForWriting.close()
 
         // Wait for the control socket, which is the supervisor's own signal
         // that the VM is up and reachable.

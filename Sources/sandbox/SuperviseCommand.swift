@@ -43,10 +43,13 @@ struct SuperviseCommand: AsyncParsableCommand {
         let logPath = logDirectory.appending(path: "console.log")
         let writer = try RotatingFileWriter(path: logPath)
 
-        let sandbox = Sandbox(
-            spec: try launch.sandboxSpec(stdout: writer, stderr: writer),
-            paths: paths
-        )
+        var spec = try launch.sandboxSpec(stdout: writer, stderr: writer)
+        // The launcher resolves secrets in the user's security session and
+        // hands them over on stdin; this process cannot reach the keychain.
+        if let handed = try? FileHandle.standardInput.readToEnd(), !handed.isEmpty {
+            spec.presetBroker = try? JSONDecoder().decode(BrokerConfiguration.self, from: handed)
+        }
+        let sandbox = Sandbox(spec: spec, paths: paths)
 
         try await sandbox.start(gatewayBinary: InstallLayout.gatewayBinary())
         FileHandle.standardError.write(Data("supervise: '\(launch.name)' is up\n".utf8))

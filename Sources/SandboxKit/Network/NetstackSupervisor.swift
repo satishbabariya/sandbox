@@ -39,6 +39,11 @@ public actor NetstackSupervisor {
         /// Credential bindings to resolve and hand the gateway. Empty means no
         /// interception at all.
         public var credentials: [CredentialBinding]
+        /// Secrets already resolved by the process that launched this one.
+        /// A detached supervisor cannot read the keychain -- it runs outside
+        /// the user's security session -- so the launcher resolves and hands
+        /// the result over; when set, no keychain access happens here.
+        public var presetBroker: BrokerConfiguration?
         /// Ports published from the host into the sandbox.
         public var ports: [PortForward]
 
@@ -50,6 +55,7 @@ public actor NetstackSupervisor {
             gatewayMAC: String = SandboxInterface.Defaults.gatewayMAC,
             mtu: UInt32 = SandboxInterface.Defaults.mtu,
             credentials: [CredentialBinding] = [],
+            presetBroker: BrokerConfiguration? = nil,
             ports: [PortForward] = []
         ) {
             self.policy = policy
@@ -59,6 +65,7 @@ public actor NetstackSupervisor {
             self.gatewayMAC = gatewayMAC
             self.mtu = mtu
             self.credentials = credentials
+            self.presetBroker = presetBroker
             self.ports = ports
         }
     }
@@ -178,10 +185,18 @@ public actor NetstackSupervisor {
     /// user, and the gateway running as this user, can read them.
     private func writeBrokerConfiguration() throws {
         guard !config.credentials.isEmpty else { return }
-        let (resolved, missing, expired) = BrokerConfiguration.resolve(
-            bindings: config.credentials)
-        self.missingSecrets = missing
-        self.expiredSecrets = expired
+        let resolved: BrokerConfiguration
+        if let preset = config.presetBroker {
+            // Already resolved by the launcher; missing and expired were its
+            // to report.
+            resolved = preset
+        } else {
+            let (fresh, missing, expired) = BrokerConfiguration.resolve(
+                bindings: config.credentials)
+            self.missingSecrets = missing
+            self.expiredSecrets = expired
+            resolved = fresh
+        }
         guard !resolved.credentials.isEmpty else { return }
 
         // The CA lands in its own directory; the secrets stay in the parent,
