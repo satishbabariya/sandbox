@@ -6,7 +6,23 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-08-30
+
 ### Fixed
+
+- A detached sandbox had no credentials: the supervisor lives outside the
+  user's security session and cannot read the keychain, so a detached
+  agent's first API call answered an unexplained 401. The launcher now
+  resolves secrets and hands them to the supervisor over stdin — never the
+  spec file, never the environment.
+- `exec` carried none of the environment the main command boots with — no
+  credential sentinel, no `NODE_EXTRA_CA_CERTS`, so Node run via
+  `sandbox exec` failed TLS against the gateway. Exec'd processes now
+  inherit the sandbox's base environment; explicitly passed variables win.
+- A detached sandbox now ends when its command does, the way a container
+  ends with PID 1. Before, the record said "running" for as long as the
+  supervisor lived, and `exec` failed against the dead init with a vmexec
+  error instead of "not running".
 
 - Kits from Docker's own template images did not actually work. Those images
   bake in `USER agent`, which silently made every root-assuming bootstrap —
