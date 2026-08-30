@@ -895,6 +895,25 @@ check_absent "the config is not left unwritten" "could not write" "$out"
 out=$($B run "$IMAGE" --no-tty --mcp filesystem -- /bin/true 2>&1)
 check "--mcp without an agent is refused, not ignored" "needs an agent" "$out"
 
+echo "== a detached sandbox ends when its command does =="
+
+# The supervisor exists so exec works while the sandbox lives -- but the
+# sandbox ends when the command it was started with ends, the way a container
+# does. Before this was watched, the record said "running" for as long as the
+# supervisor lived, and exec against the dead init failed with a vmexec error
+# instead of "not running".
+"$B" run --detach --name acceptbrief "$IMAGE" -- /bin/sh -c 'sleep 3' >/dev/null 2>&1
+check "control: it starts running" "running" "$("$B" ls 2>&1 | grep acceptbrief)"
+for _ in 1 2 3 4 5 6 7 8; do
+  "$B" ls 2>&1 | grep acceptbrief | grep -q stopped && break
+  sleep 2
+done
+check "the record follows the command down" "stopped" \
+  "$("$B" ls 2>&1 | grep acceptbrief)"
+check "and exec says so plainly" "not running" \
+  "$("$B" exec acceptbrief -- /bin/true 2>&1)"
+"$B" rm acceptbrief >/dev/null 2>&1
+
 echo "== console output is captured =="
 
 $B rm logcase --force >/dev/null 2>&1

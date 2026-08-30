@@ -500,7 +500,10 @@ struct RunCommand: AsyncParsableCommand {
             }
             guard Date() < deadline else {
                 process.terminate()
-                throw CleanExit.message("timed out waiting for sandbox to start")
+                let detail = (try? String(contentsOf: logPath, encoding: .utf8)) ?? ""
+                throw CleanExit.message(
+                    "timed out waiting for sandbox to start; its log so far:\n"
+                        + String(detail.suffix(2000)))
             }
             try await Task.sleep(for: .milliseconds(100))
         }
