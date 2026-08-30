@@ -74,7 +74,7 @@ public enum KitComposer {
 
     /// A mixin has no image, so it cannot go through the sandbox translator.
     /// This reads the same sections and leaves the image blank.
-    static func translateMixin(_ spec: KitSpec) throws -> KitTranslation {
+    public static func translateMixin(_ spec: KitSpec) throws -> KitTranslation {
         var stand = spec
         // Borrow a placeholder image so the sandbox path can be reused; the
         // merge only reads the fields a mixin actually contributes.
