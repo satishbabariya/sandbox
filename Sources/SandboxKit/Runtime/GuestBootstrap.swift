@@ -235,7 +235,10 @@ extension Sandbox {
     ) -> [String] {
         guard !command.isEmpty else { return command }
         let script = """
-            [ -e /workspace ] || ln -sn \(shellQuote(destination)) /workspace
+            if [ ! -e /workspace ]; then
+              MSG=$(ln -sn \(shellQuote(destination)) /workspace 2>&1) \
+                || echo "sandbox: /workspace compat link failed: $MSG (uid=$(id -u) pwd=$(pwd) root=$(stat -c %a / 2>/dev/null))" >&2
+            fi
             exec "$@"
             """
         return ["/bin/sh", "-c", script, "sandbox"] + command

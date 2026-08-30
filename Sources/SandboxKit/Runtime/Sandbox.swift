@@ -225,7 +225,13 @@ public actor Sandbox {
             // The gateway is the only resolver the sandbox can reach, which is
             // what lets policy gate name resolution as well as dialling.
             config.dns = DNS(nameservers: [SandboxInterface.Defaults.gateway])
-            if spec.runAsRoot {
+            if spec.runAsRoot || spec.runAsUser != nil {
+                // When the privilege drop is ours, the container must start
+                // as root whatever USER the image bakes in. The kit images
+                // from Docker's own templates ship USER agent, which silently
+                // made every root-assuming bootstrap -- the CA trust, kit
+                // startup commands, the /workspace compat link -- run
+                // unprivileged and fail, some of them into 2>/dev/null.
                 config.process.user = ContainerizationOCI.User(uid: 0, gid: 0)
             }
             config.process.terminal = spec.terminal

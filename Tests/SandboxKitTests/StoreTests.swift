@@ -471,7 +471,43 @@ struct KitTests {
         #expect(result.profile.command == ["/usr/bin/demo", "--flag"])
         #expect(result.profile.allow == ["api.example.com", "*.example.org"])
         #expect(result.profile.environment["DEMO_MODE"] == "on")
-        #expect(result.profile.install == ["install-demo"])
+        // The step declared user "1000", so it is wrapped to run as the
+        // agent's identity rather than root -- root's home is not where the
+        // kit's entrypoint looks for what the step installs.
+        #expect(result.profile.install.count == 1)
+        #expect(result.profile.install[0].contains("su -s /bin/bash"))
+        #expect(
+            result.profile.install[0].contains(
+                Data("install-demo".utf8).base64EncodedString()))
+    }
+
+    @Test("an install step for root is not wrapped")
+    func rootStepUnwrapped() throws {
+        for user in ["\"0\"", "\"root\"", "# none"] {
+            let parsed = try spec(
+                """
+                name: demo
+                kind: sandbox
+                sandbox:
+                  image: docker/sandbox-templates:shell
+                setup:
+                  install:
+                    - command: install-demo
+                      user: \(user)
+                """)
+            let result = try KitTranslator.translate(parsed)
+            #expect(result.profile.install == ["install-demo"], "user \(user)")
+        }
+    }
+
+    @Test("a quote in an install step cannot escape the wrapping")
+    func stepQuotingSafe() {
+        let hostile = "echo 'a'; \" ; rm -rf / #"
+        let wrapped = KitTranslator.runAsAgentUser(hostile)
+        // The command travels base64-encoded: none of its bytes appear
+        // unencoded in the wrapper, so no quoting of any kind can break out.
+        #expect(!wrapped.contains("rm -rf"))
+        #expect(wrapped.contains(Data(hostile.utf8).base64EncodedString()))
     }
 
     @Test("a deny rule is reported, never silently dropped")

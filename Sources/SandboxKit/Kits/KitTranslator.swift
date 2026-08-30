@@ -98,11 +98,20 @@ public enum KitTranslator {
             bindings.append(contentsOf: declared)
         }
 
-        // Install steps. `user` is dropped: sandbox runs the prepare sandbox as
-        // root, which is a superset of what a step asking for uid 1000 needs.
+        // Install steps. Root is a permission superset of any user a step
+        // asks for, but not a behaviour superset: `uv tool install` as root
+        // puts the tool in /root/.local, while the kit's entrypoint expects
+        // it in the agent's home. A step that names an unprivileged user runs
+        // as uid 1000 -- the same identity the privilege drop hands the agent
+        // at runtime -- so what it installs lands where the agent can run it.
         var install: [String] = []
         for step in spec.setup?.install ?? [] {
-            install.append(step.command.shellCommand)
+            let command = step.command.shellCommand
+            if let user = step.user, user != "0", user != "root" {
+                install.append(Self.runAsAgentUser(command))
+            } else {
+                install.append(command)
+            }
         }
         // Startup commands run as root at every start. `background` is not
         // honoured -- a command that never returns would hold the sandbox
@@ -110,12 +119,24 @@ public enum KitTranslator {
         var startup: [StartupCommand] = []
         for step in spec.setup?.startup ?? [] {
             let background = step.background ?? false
+            let asAgent = step.user.map { $0 != "0" && $0 != "root" } ?? false
             switch step.command {
             case .argv(let parts) where !parts.isEmpty:
-                startup.append(StartupCommand(argv: parts, background: background))
+                if asAgent {
+                    startup.append(
+                        StartupCommand(
+                            argv: [
+                                "/bin/sh", "-c",
+                                Self.runAsAgentUser(shellJoin(parts)),
+                            ], background: background))
+                } else {
+                    startup.append(StartupCommand(argv: parts, background: background))
+                }
             case .shell(let text):
                 startup.append(
-                    StartupCommand(argv: ["/bin/sh", "-c", text], background: background))
+                    StartupCommand(
+                        argv: ["/bin/sh", "-c", asAgent ? Self.runAsAgentUser(text) : text],
+                        background: background))
             case .argv:
                 continue
             }
@@ -159,6 +180,11 @@ public enum KitTranslator {
             secrets: secrets,
             environment: spec.environment?.variables ?? [:],
             docker: spec.security?.privileged ?? false,
+            // The privilege drop is sandbox's, not the image's. Relying on the
+            // image's USER left every root-assuming bootstrap -- CA trust,
+            // startup commands, /etc/hosts -- running unprivileged and
+            // failing, some of them into 2>/dev/null.
+            runAsUser: "agent",
             files: files,
             startup: startup,
             agentInstructions: instructions,
@@ -180,6 +206,49 @@ extension KitTranslator {
 
     /// A kit writes the value template with `%s`; sandbox writes it with `{}`.
     /// A rule that gives only a scheme means "<scheme> <secret>".
+    /// Wrap an install command so it runs as the agent's identity: uid 1000,
+    /// reusing whatever user the image already has there or creating one, with
+    /// that user's home -- the same resolution the runtime privilege drop
+    /// performs, so build-time and run-time agree on whose home things are in.
+    ///
+    /// The command travels base64-encoded: it is an arbitrary multi-line bash
+    /// program from a kit, and splicing one into a quoted su argument is how
+    /// installs broke the last time.
+    static func runAsAgentUser(_ command: String) -> String {
+        let encoded = Data(command.utf8).base64EncodedString()
+        return """
+            SANDBOX_STEP_USER=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
+            if [ -z "$SANDBOX_STEP_USER" ]; then
+              adduser -D -u 1000 agent >/dev/null 2>&1 \
+                || useradd -m -u 1000 -s /bin/bash agent >/dev/null 2>&1 || true
+              SANDBOX_STEP_USER=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
+            fi
+            if [ -z "$SANDBOX_STEP_USER" ]; then
+              echo "sandbox: no uid 1000 user could be created; running the step as root" >&2
+              echo \(shellSingleQuote(encoded)) | base64 -d | /bin/bash
+            else
+              SANDBOX_STEP_HOME=$(getent passwd 1000 | cut -d: -f6)
+              [ -n "$SANDBOX_STEP_HOME" ] || SANDBOX_STEP_HOME=/home/$SANDBOX_STEP_USER
+              mkdir -p "$SANDBOX_STEP_HOME"
+              chown 1000 "$SANDBOX_STEP_HOME"
+              echo \(shellSingleQuote(encoded)) | base64 -d > /tmp/sandbox-step.sh
+              chown 1000 /tmp/sandbox-step.sh
+              su -s /bin/bash "$SANDBOX_STEP_USER" -c "HOME=$SANDBOX_STEP_HOME /bin/bash /tmp/sandbox-step.sh"
+              SANDBOX_STEP_RC=$?
+              rm -f /tmp/sandbox-step.sh
+              [ "$SANDBOX_STEP_RC" -eq 0 ]
+            fi
+            """
+    }
+
+    static func shellJoin(_ parts: [String]) -> String {
+        parts.map(shellSingleQuote).joined(separator: " ")
+    }
+
+    static func shellSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     static func format(for rule: KitSpec.Credential.APIKey.Inject) -> String {
         if let format = rule.format, !format.isEmpty {
             return format.replacingOccurrences(of: "%s", with: "{}")
