@@ -73,6 +73,7 @@ public actor Sandbox {
                 policy: spec.policy,
                 runtimeDirectory: socketDir,
                 credentials: spec.credentials,
+                presetBroker: spec.presetBroker,
                 ports: spec.ports
             ),
             logger: logger
@@ -509,6 +510,27 @@ public actor Sandbox {
 
     /// Run an additional process inside the already-running sandbox.
     ///
+    /// What every process in this sandbox should inherit: the trust variables
+    /// that make the gateway's CA acceptable to runtimes that keep their own
+    /// stores, the credential sentinels, and the profile's environment.
+    ///
+    /// The main command gets all of this assembled at boot. An exec'd process
+    /// used to get none of it, which meant Node inside an exec failed TLS
+    /// against the gateway with SELF_SIGNED_CERT_IN_CHAIN -- the exact class
+    /// of failure the boot-time wrapping exists to prevent.
+    private var execBaseEnvironment: [String: String] {
+        var env: [String: String] = [:]
+        if netstack != nil {
+            for (key, value) in Self.trustEnvironment { env[key] = value }
+        }
+        for binding in spec.credentials {
+            guard let name = binding.environmentVariable else { continue }
+            env[name] = CredentialBinding.sentinel
+        }
+        for (key, value) in spec.environment { env[key] = value }
+        return env
+    }
+
     /// The process inherits the sandbox's network position exactly: it is in
     /// the same VM behind the same single interface, so policy applies to it
     /// without anything extra being wired up.
@@ -527,7 +549,7 @@ public actor Sandbox {
         config.stdout = stdout ?? StreamWriter.standardOutput
         config.stderr = stderr ?? StreamWriter.standardError
         config.workingDirectory = workingDirectory ?? spec.workspaceDestination
-        for (key, value) in environment {
+        for (key, value) in execBaseEnvironment.merging(environment) { _, caller in caller } {
             config.environmentVariables.append("\(key)=\(value)")
         }
         if spec.privileged {
@@ -577,7 +599,8 @@ public actor Sandbox {
         // COLUMNS and LINES are set from the start for exactly that window.
         config.environmentVariables.append("COLUMNS=\(size.width)")
         config.environmentVariables.append("LINES=\(size.height)")
-        for (key, value) in environment where key != "TERM" {
+        for (key, value) in execBaseEnvironment.merging(environment) { _, caller in caller }
+        where key != "TERM" {
             config.environmentVariables.append("\(key)=\(value)")
         }
         if spec.privileged {

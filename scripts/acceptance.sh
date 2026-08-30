@@ -1110,6 +1110,21 @@ check "a startup command runs" "STARTUP_RAN" "$out"
 # variable both have to come from the kit, or the tool is never told there is
 # a key at all.
 check "a kit-declared credential reaches the tool" "KEY=sandbox-managed" "$out"
+
+# The same, detached. The supervisor lives outside the user's security
+# session and cannot read the keychain, so the launcher resolves secrets and
+# hands them over -- without that, a detached agent's first API call was an
+# unexplained 401.
+"$B" run --detach --name acceptcred acceptkit --secret selftest \
+  -- /bin/sh -c 'sleep 30' >/dev/null 2>&1
+out=$("$B" exec acceptcred -- /bin/sh -c 'echo "TOKEN=$SELFTEST_TOKEN"' 2>&1)
+check "a detached sandbox brokers the same credential" "TOKEN=sandbox-managed" "$out"
+check_absent "and the supervisor never wanted the keychain" "no credential" \
+  "$(cat /tmp/sandbox-acceptcred/supervisor.log 2>/dev/null)"
+check_absent "and the real value is nowhere in its runtime dir but the broker file" \
+  "sk-selftest" \
+  "$(cat /tmp/sandbox-acceptcred/launch.json /tmp/sandbox-acceptcred/supervisor.log 2>/dev/null)"
+"$B" rm --force acceptcred >/dev/null 2>&1
 check_absent "and the real value does not" "sk-selftest-not-a-real-key" "$out"
 
 $B secret rm selftest >/dev/null 2>&1
