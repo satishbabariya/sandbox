@@ -1,0 +1,750 @@
+From 22f7b28157e214b272a59abfdd5a6fc255569f61 Mon Sep 17 00:00:00 2001
+From: Satish Babariya <16605023+satishbabariya@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 04:27:16 +0000
+Subject: [PATCH] Read a ClientHello split across records before judging its
+ name
+
+PeekServerName read exactly one TLS record. A ClientHello may legally be
+split across several, and servers reassemble it: crypto/tls reads
+records until the handshake message is whole. When the first record
+held only part of the hello, the parser returned ErrIncomplete with no
+name, and inspectAndForward treated every nameless error alike and
+spliced the connection upstream. On a shared CDN address that let a
+refused name through -- gist.github.com next to *.github.com -- for any
+client that fragments its hello, which is the case the SNI check exists
+for.
+
+PeekServerName now reads handshake records until the ClientHello is
+complete, bounded at 16 KiB for the message and 32 KiB for the records
+carrying it, inside the existing 15 s deadline. Only the first record
+decides whether the stream is TLS; once it is, anything else before the
+hello is whole is ErrMalformed rather than "not TLS". The forwarder
+splices only ErrNotTLS and a complete hello with no SNI, as before;
+every other outcome is refused and audited as sni-unreadable.
+
+The forwarder tests put a real crypto/tls client and server on either
+side of inspectAndForward and re-frame the client's hello into two
+records. Before this change the server completed a handshake for the
+denied name; now it never sees the hello, while the same split for an
+allowed name still completes.
+---
+ pkg/policy/engine.go                     |  11 +-
+ pkg/services/forwarder/sni_split_test.go | 306 +++++++++++++++++++++++
+ pkg/services/forwarder/tcp.go            |  20 +-
+ pkg/sni/sni.go                           | 138 ++++++----
+ pkg/sni/sni_test.go                      |  91 +++++++
+ 5 files changed, 516 insertions(+), 50 deletions(-)
+ create mode 100644 pkg/services/forwarder/sni_split_test.go
+
+diff --git a/pkg/policy/engine.go b/pkg/policy/engine.go
+index 5d66e60..e2533f8 100644
+--- a/pkg/policy/engine.go
++++ b/pkg/policy/engine.go
+@@ -21,11 +21,12 @@ type Verdict struct {
+ }
+ 
+ const (
+-	ReasonAllowRule    = "allow-rule"
+-	ReasonSNIDenied    = "sni-denied"
+-	ReasonDenyRule     = "deny-rule"
+-	ReasonNoAllowRule  = "no-allow-rule"
+-	ReasonUnresolvedIP = "unresolved-address"
++	ReasonAllowRule     = "allow-rule"
++	ReasonSNIDenied     = "sni-denied"
++	ReasonSNIUnreadable = "sni-unreadable"
++	ReasonDenyRule      = "deny-rule"
++	ReasonNoAllowRule   = "no-allow-rule"
++	ReasonUnresolvedIP  = "unresolved-address"
+ )
+ 
+ // Engine is the authoritative egress policy for one sandbox.
+diff --git a/pkg/services/forwarder/sni_split_test.go b/pkg/services/forwarder/sni_split_test.go
+new file mode 100644
+index 0000000..6273647
+--- /dev/null
++++ b/pkg/services/forwarder/sni_split_test.go
+@@ -0,0 +1,306 @@
++package forwarder
++
++import (
++	"crypto/ecdsa"
++	"crypto/elliptic"
++	"crypto/rand"
++	"crypto/tls"
++	"crypto/x509"
++	"crypto/x509/pkix"
++	"io"
++	"math/big"
++	"net"
++	"testing"
++	"time"
++
++	"github.com/containers/gvisor-tap-vsock/pkg/policy"
++)
++
++// A ClientHello may be split across several TLS records, and servers
++// reassemble it: crypto/tls reads records until the handshake message is
++// whole. These tests put a real crypto/tls client and a real crypto/tls
++// server on either side of inspectAndForward and re-frame the client's hello
++// into two records, so what they prove is what a server upstream would accept,
++// not what our own parser happens to like.
++
++// cutAt is where the hello is split: after the handshake header, version and
++// random. The first record then holds no session id, no cipher suites and no
++// extensions, so the server name can only be found by reading the second.
++const cutAt = 4 + 2 + 32
++
++// splitFirstRecord re-frames the first TLS record written through it into two
++// records, split at cutAt, and passes everything after it through untouched.
++type splitFirstRecord struct {
++	net.Conn
++	pending []byte
++	done    bool
++}
++
++func (c *splitFirstRecord) Write(b []byte) (int, error) {
++	if c.done {
++		return c.Conn.Write(b)
++	}
++	c.pending = append(c.pending, b...)
++	if len(c.pending) < 5 {
++		return len(b), nil
++	}
++	end := 5 + (int(c.pending[3])<<8 | int(c.pending[4]))
++	if len(c.pending) < end {
++		return len(b), nil
++	}
++	c.done = true
++
++	header, body := c.pending[:3], c.pending[5:end]
++	var out []byte
++	for _, part := range [][]byte{body[:cutAt], body[cutAt:]} {
++		out = append(out, header...)
++		out = append(out, byte(len(part)>>8), byte(len(part)))
++		out = append(out, part...)
++	}
++	out = append(out, c.pending[end:]...)
++	if _, err := c.Conn.Write(out); err != nil {
++		return 0, err
++	}
++	return len(b), nil
++}
++
++// upstreamResult is what the real TLS server behind the gate saw.
++type upstreamResult struct {
++	serverName string // the SNI its handshake was asked for, "" if none arrived
++	err        error  // nil once a full handshake completed
++}
++
++// tlsUpstream starts a crypto/tls server for names and returns a connection to
++// it, plus the pool that trusts its certificate and the result of the one
++// handshake it serves.
++func tlsUpstream(t *testing.T, names ...string) (net.Conn, *x509.CertPool, <-chan upstreamResult) {
++	t.Helper()
++	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	template := &x509.Certificate{
++		SerialNumber: big.NewInt(1),
++		Subject:      pkix.Name{CommonName: names[0]},
++		DNSNames:     names,
++		NotBefore:    time.Now().Add(-time.Hour),
++		NotAfter:     time.Now().Add(time.Hour),
++	}
++	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
++	if err != nil {
++		t.Fatal(err)
++	}
++	leaf, err := x509.ParseCertificate(der)
++	if err != nil {
++		t.Fatal(err)
++	}
++	pool := x509.NewCertPool()
++	pool.AddCert(leaf)
++
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { ln.Close() })
++
++	result := make(chan upstreamResult, 1)
++	go func() {
++		conn, err := ln.Accept()
++		if err != nil {
++			result <- upstreamResult{err: err}
++			return
++		}
++		defer conn.Close()
++		conn.SetDeadline(time.Now().Add(10 * time.Second))
++		var seen string
++		server := tls.Server(conn, &tls.Config{
++			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
++				seen = hello.ServerName
++				return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
++			},
++		})
++		err = server.Handshake()
++		result <- upstreamResult{serverName: seen, err: err}
++	}()
++
++	upstream, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++	return upstream, pool, result
++}
++
++// The rule from the issue: a wildcard that allows a CDN's names, and a deny
++// for one of them that shares its addresses.
++func splitTestEngine(t *testing.T) *policy.Engine {
++	t.Helper()
++	e, err := policy.NewEngine([]string{"*.github.com"}, []string{"gist.github.com"}, "")
++	if err != nil {
++		t.Fatal(err)
++	}
++	return e
++}
++
++// handshakeThroughGate runs a real TLS client for serverName, its hello split
++// in two records, through inspectAndForward to a real TLS server. It returns
++// the client's handshake error and what the server saw.
++func handshakeThroughGate(t *testing.T, serverName string) (error, upstreamResult) {
++	t.Helper()
++	upstream, pool, result := tlsUpstream(t, "gist.github.com", "api.github.com")
++
++	guest, client := net.Pipe()
++	go inspectAndForward(guest, upstream, net.ParseIP("127.0.0.1"), 443, splitTestEngine(t), nil)
++
++	conn := tls.Client(&splitFirstRecord{Conn: client}, &tls.Config{
++		ServerName: serverName,
++		RootCAs:    pool,
++	})
++	defer conn.Close()
++	conn.SetDeadline(time.Now().Add(10 * time.Second))
++	clientErr := conn.Handshake()
++	conn.Close()
++
++	select {
++	case r := <-result:
++		return clientErr, r
++	case <-time.After(10 * time.Second):
++		t.Fatal("the upstream server never finished with its connection")
++		return nil, upstreamResult{}
++	}
++}
++
++func TestSplitHelloForDeniedNameIsRefused(t *testing.T) {
++	clientErr, up := handshakeThroughGate(t, "gist.github.com")
++	if up.serverName != "" || up.err == nil {
++		t.Errorf("upstream saw a hello for %q (handshake err %v); a denied name must never reach it",
++			up.serverName, up.err)
++	}
++	if clientErr == nil {
++		t.Error("the client completed a handshake with a denied name")
++	}
++}
++
++// The positive control: the same split for an allowed name must still reach
++// the server and complete, or the refusal above proves nothing.
++func TestSplitHelloForAllowedNameConnects(t *testing.T) {
++	clientErr, up := handshakeThroughGate(t, "api.github.com")
++	if clientErr != nil {
++		t.Errorf("client handshake: %v", clientErr)
++	}
++	if up.err != nil || up.serverName != "api.github.com" {
++		t.Errorf("upstream saw %q with err %v, want a completed handshake for api.github.com",
++			up.serverName, up.err)
++	}
++}
++
++// A guest that sends the first part of a hello and then stops has not said
++// which name it wants. It must not be forwarded as though it were nameless.
++func TestTruncatedHelloIsNotForwarded(t *testing.T) {
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	received := make(chan []byte, 1)
++	go func() {
++		conn, err := ln.Accept()
++		if err != nil {
++			received <- nil
++			return
++		}
++		defer conn.Close()
++		conn.SetDeadline(time.Now().Add(10 * time.Second))
++		b, _ := io.ReadAll(conn)
++		received <- b
++	}()
++	upstream, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	guest, client := net.Pipe()
++	go inspectAndForward(guest, upstream, net.ParseIP("127.0.0.1"), 443, splitTestEngine(t), nil)
++
++	// Capture a real hello, send only its first record's worth after the
++	// split, then hang up.
++	var captured []byte
++	capture := &captureConn{onWrite: func(b []byte) { captured = append(captured, b...) }}
++	conn := tls.Client(&splitFirstRecord{Conn: capture}, &tls.Config{ServerName: "gist.github.com"})
++	conn.SetDeadline(time.Now().Add(time.Second))
++	_ = conn.Handshake()
++	firstRecord := 5 + (int(captured[3])<<8 | int(captured[4]))
++
++	client.SetDeadline(time.Now().Add(10 * time.Second))
++	if _, err := client.Write(captured[:firstRecord]); err != nil {
++		t.Fatal(err)
++	}
++	client.Close()
++
++	select {
++	case b := <-received:
++		if len(b) != 0 {
++			t.Errorf("upstream received %d bytes of a hello the gate never read a name from", len(b))
++		}
++	case <-time.After(10 * time.Second):
++		t.Fatal("the gate neither forwarded nor released the upstream")
++	}
++}
++
++// Traffic that is not TLS at all still goes through: the dial check already
++// allowed the address, and there is no name to check.
++func TestNonTLSIsStillForwarded(t *testing.T) {
++	ln, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer ln.Close()
++	received := make(chan []byte, 1)
++	go func() {
++		conn, err := ln.Accept()
++		if err != nil {
++			received <- nil
++			return
++		}
++		defer conn.Close()
++		conn.SetDeadline(time.Now().Add(10 * time.Second))
++		b, _ := io.ReadAll(conn)
++		received <- b
++	}()
++	upstream, err := net.Dial("tcp", ln.Addr().String())
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	guest, client := net.Pipe()
++	go inspectAndForward(guest, upstream, net.ParseIP("127.0.0.1"), 443, splitTestEngine(t), nil)
++
++	request := "GET / HTTP/1.1\r\nHost: gist.github.com\r\n\r\n"
++	client.SetDeadline(time.Now().Add(10 * time.Second))
++	if _, err := client.Write([]byte(request)); err != nil {
++		t.Fatal(err)
++	}
++	client.Close()
++
++	select {
++	case b := <-received:
++		if string(b) != request {
++			t.Errorf("upstream received %q, want the request replayed intact", b)
++		}
++	case <-time.After(10 * time.Second):
++		t.Fatal("upstream never saw the request")
++	}
++}
++
++// captureConn swallows what a TLS client writes and never answers, so the
++// client's first flight can be recorded without a peer.
++type captureConn struct {
++	net.Conn
++	onWrite func([]byte)
++}
++
++func (c *captureConn) Write(b []byte) (int, error)      { c.onWrite(b); return len(b), nil }
++func (c *captureConn) Read([]byte) (int, error)         { time.Sleep(10 * time.Millisecond); return 0, io.EOF }
++func (c *captureConn) Close() error                     { return nil }
++func (c *captureConn) SetDeadline(time.Time) error      { return nil }
++func (c *captureConn) SetReadDeadline(time.Time) error  { return nil }
++func (c *captureConn) SetWriteDeadline(time.Time) error { return nil }
+diff --git a/pkg/services/forwarder/tcp.go b/pkg/services/forwarder/tcp.go
+index 32ca107..ffaeaf8 100644
+--- a/pkg/services/forwarder/tcp.go
++++ b/pkg/services/forwarder/tcp.go
+@@ -2,6 +2,7 @@ package forwarder
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"net"
+ 	"sync"
+@@ -144,15 +145,28 @@ func inspectAndForward(
+ 	guest.SetReadDeadline(time.Now().Add(clientHelloTimeout))
+ 	name, consumed, err := sni.PeekServerName(guest)
+ 	guest.SetReadDeadline(time.Time{})
+-	if err != nil && name == "" {
+-		// Not TLS, or no name to check. The dial check already allowed this
+-		// address, so forward what we read and splice the rest.
++	switch {
++	case errors.Is(err, sni.ErrNotTLS), errors.Is(err, sni.ErrNoServerName):
++		// Not TLS, or a complete hello with no name to check. The dial check
++		// already allowed this address, so forward what we read and splice
++		// the rest.
+ 		if len(consumed) == 0 {
+ 			upstream.Close()
+ 			return
+ 		}
+ 		spliceWithPrefix(guest, upstream, consumed)
+ 		return
++	case err != nil:
++		// A hello that is truncated, too slow, too large or unreadable has not
++		// told us its name, and the server may still read one from it: servers
++		// reassemble a hello split across records. Forwarding it as nameless
++		// would let any refused name through on a shared address, so it is
++		// refused like one.
++		v := policy.Verdict{Allowed: false, Reason: policy.ReasonSNIUnreadable}
++		log.Debugf("policy: refused tls to %s (%s: %v)", ip, v.Reason, err)
++		pol.RecordSNI("tcp", ip, port, v)
++		upstream.Close()
++		return
+ 	}
+ 
+ 	if v := pol.AllowSNI(name, port); !v.Allowed {
+diff --git a/pkg/sni/sni.go b/pkg/sni/sni.go
+index 41cd251..2464b16 100644
+--- a/pkg/sni/sni.go
++++ b/pkg/sni/sni.go
+@@ -17,94 +17,148 @@ import (
+ )
+ 
+ var (
+-	// ErrNotTLS means the first bytes are not a TLS handshake record. The
++	// ErrNotTLS means the first record is not a TLS handshake record. The
+ 	// caller should fall through to whatever policy it applies without SNI.
+ 	ErrNotTLS = errors.New("not a TLS handshake")
+-	// ErrNoServerName means a valid ClientHello carried no SNI extension,
+-	// which is legal — an IP-literal connection has nothing to name.
++	// ErrNoServerName means a complete, valid ClientHello carried no SNI
++	// extension, which is legal — an IP-literal connection has nothing to name.
+ 	ErrNoServerName = errors.New("no server name extension")
+-	// ErrIncomplete means the record was truncated.
++	// ErrIncomplete means the stream ended, or the read deadline passed,
++	// before the ClientHello was whole.
+ 	ErrIncomplete = errors.New("incomplete ClientHello")
++	// ErrMalformed means the stream began as a TLS handshake but did not carry
++	// a ClientHello this package can read within its bounds.
++	ErrMalformed = errors.New("malformed ClientHello")
+ )
+ 
+-// maxRecord bounds how much is read before giving up. A ClientHello is
+-// normally well under 2 KiB; the TLS record limit is 16 KiB.
+-const maxRecord = 16 * 1024
++// The only errors after which a caller may forward a connection unchecked are
++// ErrNotTLS and ErrNoServerName: in both, the stream has said everything it is
++// going to say about a name. Every other error means a name may still be
++// coming, and the connection must be refused rather than guessed at.
++
++const (
++	// maxRecord is the TLS plaintext record limit.
++	maxRecord = 16 * 1024
++	// maxHello bounds the ClientHello message itself. One is normally well
++	// under 2 KiB, even with a post-quantum key share.
++	maxHello = 16 * 1024
++	// maxPeek bounds the bytes read to reassemble it. A hello may legally be
++	// split across many records, each costing a 5-byte header, and a guest
++	// must not make the gateway buffer without limit by splitting it finely.
++	maxPeek = 2 * maxHello
++)
+ 
+-// PeekServerName reads the first TLS record from r and returns the server name
+-// it advertises, along with the bytes consumed so the caller can replay them.
++// PeekServerName reads TLS handshake records from r until the ClientHello
++// they carry is complete, and returns the server name it advertises along
++// with every byte consumed so the caller can replay them.
++//
++// A ClientHello may be split across several records, and servers reassemble
++// it — Go's crypto/tls reads records until the handshake message is whole. A
++// reader that stopped at the first record would return no name for a hello
++// whose name is in the second, and a gate that forwards nameless connections
++// would forward a name it refuses.
+ //
+ // The returned bytes are ALWAYS the ones read, even on error, so a caller can
+ // forward a connection it could not classify rather than breaking it.
+ func PeekServerName(r io.Reader) (string, []byte, error) {
+-	header := make([]byte, 5)
+-	if _, err := io.ReadFull(r, header); err != nil {
+-		return "", header, ErrIncomplete
+-	}
++	var consumed, msg []byte
++	for {
++		if len(consumed)+5 > maxPeek {
++			return "", consumed, ErrMalformed
++		}
++		header := make([]byte, 5)
++		n, err := io.ReadFull(r, header)
++		consumed = append(consumed, header[:n]...)
++		if err != nil {
++			return "", consumed, ErrIncomplete
++		}
+ 
+-	// 0x16 = handshake; bytes 1-2 are the legacy record version.
+-	if header[0] != 0x16 {
+-		return "", header, ErrNotTLS
+-	}
++		// 0x16 = handshake; bytes 1-2 are the legacy record version. Only the
++		// first record decides whether this is TLS at all. Once it is, a
++		// record of any other type before the hello is whole is not something
++		// a client sends, and is refused rather than read as "not TLS".
++		if header[0] != 0x16 {
++			if len(msg) == 0 {
++				return "", consumed, ErrNotTLS
++			}
++			return "", consumed, ErrMalformed
++		}
+ 
+-	length := int(header[3])<<8 | int(header[4])
+-	if length <= 0 || length > maxRecord {
+-		return "", header, ErrNotTLS
+-	}
++		// Zero-length handshake records are forbidden (RFC 8446 §5.1).
++		length := int(header[3])<<8 | int(header[4])
++		if length == 0 || length > maxRecord || len(consumed)+length > maxPeek {
++			return "", consumed, ErrMalformed
++		}
+ 
+-	body := make([]byte, length)
+-	if _, err := io.ReadFull(r, body); err != nil {
+-		return "", append(header, body...), ErrIncomplete
+-	}
+-	consumed := append(header, body...)
++		body := make([]byte, length)
++		n, err = io.ReadFull(r, body)
++		consumed = append(consumed, body[:n]...)
++		if err != nil {
++			return "", consumed, ErrIncomplete
++		}
++		msg = append(msg, body...)
+ 
+-	name, err := serverNameFromHandshake(body)
+-	return name, consumed, err
++		// Handshake header: type(1) + length(3).
++		if len(msg) < 4 {
++			continue
++		}
++		if msg[0] != 0x01 {
++			return "", consumed, ErrMalformed
++		}
++		helloLen := 4 + (int(msg[1])<<16 | int(msg[2])<<8 | int(msg[3]))
++		if helloLen > maxHello {
++			return "", consumed, ErrMalformed
++		}
++		if len(msg) >= helloLen {
++			name, err := serverNameFromHandshake(msg[:helloLen])
++			return name, consumed, err
++		}
++	}
+ }
+ 
+-// serverNameFromHandshake walks a ClientHello body to its server_name
++// serverNameFromHandshake walks a complete ClientHello message to its server_name
+ // extension. Every length is checked against the remaining buffer, because
+ // this parses bytes chosen by the sandbox.
+ func serverNameFromHandshake(b []byte) (string, error) {
+ 	// Handshake header: type(1) + length(3).
+ 	if len(b) < 4 || b[0] != 0x01 {
+-		return "", ErrNotTLS
++		return "", ErrMalformed
+ 	}
+ 	b = b[4:]
+ 
+ 	// client_version(2) + random(32)
+ 	if len(b) < 34 {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[34:]
+ 
+ 	// session_id
+ 	if len(b) < 1 {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	sessionLen := int(b[0])
+ 	if len(b) < 1+sessionLen {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[1+sessionLen:]
+ 
+ 	// cipher_suites
+ 	if len(b) < 2 {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	cipherLen := int(b[0])<<8 | int(b[1])
+ 	if len(b) < 2+cipherLen {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[2+cipherLen:]
+ 
+ 	// compression_methods
+ 	if len(b) < 1 {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	compressionLen := int(b[0])
+ 	if len(b) < 1+compressionLen {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[1+compressionLen:]
+ 
+@@ -116,7 +170,7 @@ func serverNameFromHandshake(b []byte) (string, error) {
+ 	extensionsLen := int(b[0])<<8 | int(b[1])
+ 	b = b[2:]
+ 	if len(b) < extensionsLen {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[:extensionsLen]
+ 
+@@ -125,7 +179,7 @@ func serverNameFromHandshake(b []byte) (string, error) {
+ 		extLen := int(b[2])<<8 | int(b[3])
+ 		b = b[4:]
+ 		if len(b) < extLen {
+-			return "", ErrIncomplete
++			return "", ErrMalformed
+ 		}
+ 		if extType == 0x0000 {
+ 			return parseServerNameList(b[:extLen])
+@@ -138,12 +192,12 @@ func serverNameFromHandshake(b []byte) (string, error) {
+ func parseServerNameList(b []byte) (string, error) {
+ 	// server_name_list length(2)
+ 	if len(b) < 2 {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	listLen := int(b[0])<<8 | int(b[1])
+ 	b = b[2:]
+ 	if len(b) < listLen {
+-		return "", ErrIncomplete
++		return "", ErrMalformed
+ 	}
+ 	b = b[:listLen]
+ 
+@@ -152,7 +206,7 @@ func parseServerNameList(b []byte) (string, error) {
+ 		nameLen := int(b[1])<<8 | int(b[2])
+ 		b = b[3:]
+ 		if len(b) < nameLen {
+-			return "", ErrIncomplete
++			return "", ErrMalformed
+ 		}
+ 		// 0 = host_name; no other type has ever been defined.
+ 		if nameType == 0 {
+diff --git a/pkg/sni/sni_test.go b/pkg/sni/sni_test.go
+index f079ee5..3881c10 100644
+--- a/pkg/sni/sni_test.go
++++ b/pkg/sni/sni_test.go
+@@ -134,3 +134,94 @@ func TestConsumedBytesReplayIntact(t *testing.T) {
+ 		t.Error("replaying consumed bytes plus the remainder must equal the original stream")
+ 	}
+ }
++
++// reframe splits the handshake carried by a single-record hello into records
++// of at most size bytes each, the way a client is allowed to.
++func reframe(t *testing.T, hello []byte, size int) []byte {
++	t.Helper()
++	end := 5 + (int(hello[3])<<8 | int(hello[4]))
++	body := hello[5:end]
++	var out []byte
++	for len(body) > 0 {
++		n := min(size, len(body))
++		out = append(out, hello[0], hello[1], hello[2], byte(n>>8), byte(n))
++		out = append(out, body[:n]...)
++		body = body[n:]
++	}
++	return append(out, hello[end:]...)
++}
++
++func TestReassemblesHelloSplitAcrossRecords(t *testing.T) {
++	hello := captureClientHello(t, "gist.github.com")
++	// 38 ends the first record after the random, before anything that names a
++	// host; 1 is the finest split a client can make.
++	for _, size := range []int{1, 4, 38, 100, len(hello) / 2} {
++		split := reframe(t, hello, size)
++		trailing := []byte("next flight")
++		stream := io.MultiReader(bytes.NewReader(split), bytes.NewReader(trailing))
++
++		got, consumed, err := PeekServerName(stream)
++		if err != nil || got != "gist.github.com" {
++			t.Errorf("records of %d bytes: got %q, %v; want the name from the reassembled hello", size, got, err)
++			continue
++		}
++		rest, _ := io.ReadAll(stream)
++		if !bytes.Equal(append(consumed, rest...), append(split, trailing...)) {
++			t.Errorf("records of %d bytes: consumed plus remainder must replay the stream exactly", size)
++		}
++	}
++}
++
++func TestSplitHelloTruncatedIsIncomplete(t *testing.T) {
++	split := reframe(t, captureClientHello(t, "example.com"), 100)
++	for _, cut := range []int{105, 106, 200, len(split) - 1} {
++		_, consumed, err := PeekServerName(bytes.NewReader(split[:cut]))
++		if !errors.Is(err, ErrIncomplete) {
++			t.Errorf("cut at %d: err = %v, want ErrIncomplete", cut, err)
++		}
++		if !bytes.Equal(consumed, split[:cut]) {
++			t.Errorf("cut at %d: consumed must be every byte read", cut)
++		}
++	}
++}
++
++// Once the stream has started as a handshake, nothing else it does before the
++// hello is whole may be taken to mean "not TLS": that would be forwarded
++// unchecked, and a server may still read a name from what follows.
++func TestHandshakeThatGoesWrongIsMalformedNotNonTLS(t *testing.T) {
++	split := reframe(t, captureClientHello(t, "example.com"), 38)
++	firstRecord := split[:5+38]
++	cases := map[string][]byte{
++		"application data before the hello is whole": append(append([]byte{}, firstRecord...), 0x17, 0x03, 0x03, 0x00, 0x01, 0x00),
++		"zero-length handshake record":               {0x16, 0x03, 0x01, 0x00, 0x00},
++		"record over the TLS limit":                  {0x16, 0x03, 0x01, 0x40, 0x01},
++		"handshake that is not a ClientHello":        {0x16, 0x03, 0x01, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00},
++		"hello claiming more than maxHello":          {0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0x00, 0x40, 0x01},
++	}
++	for name, input := range cases {
++		if _, _, err := PeekServerName(bytes.NewReader(input)); !errors.Is(err, ErrMalformed) {
++			t.Errorf("%s: err = %v, want ErrMalformed", name, err)
++		}
++	}
++}
++
++// A hello within maxHello, sliced into one-byte records, would take far more
++// than maxPeek to carry. The reader must give up at the bound, not buffer it.
++func TestFineSplittingIsBounded(t *testing.T) {
++	var stream []byte
++	// A ClientHello header claiming just under maxHello bytes, then one byte
++	// per record for as long as the reader keeps asking.
++	for _, b := range []byte{0x01, 0x00, 0x3f, 0xf0} {
++		stream = append(stream, 0x16, 0x03, 0x01, 0x00, 0x01, b)
++	}
++	for len(stream) < 4*maxPeek {
++		stream = append(stream, 0x16, 0x03, 0x01, 0x00, 0x01, 0x00)
++	}
++	_, consumed, err := PeekServerName(bytes.NewReader(stream))
++	if !errors.Is(err, ErrMalformed) {
++		t.Errorf("err = %v, want ErrMalformed", err)
++	}
++	if len(consumed) > maxPeek {
++		t.Errorf("read %d bytes, more than the %d bound", len(consumed), maxPeek)
++	}
++}
+-- 
+2.47.3
+

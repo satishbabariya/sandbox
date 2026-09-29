@@ -6,6 +6,16 @@ Notable changes to sandbox. Dates are the release date; the format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The SNI check read only the first TLS record. A client that split its
+  ClientHello across two records reached a denied name on a shared address,
+  for example `gist.github.com` next to an allowed `*.github.com`, because
+  the gateway forwarded a hello it could not name. The gateway now
+  reassembles the hello (up to 16 KiB) before judging it. A hello it cannot
+  read in full is refused and logged as `sni-unreadable`. Non-TLS traffic
+  and a complete hello with no SNI are forwarded as before.
+
 ## [0.1.7] — 2026-08-30
 
 ### Added

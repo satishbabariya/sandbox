@@ -24,6 +24,7 @@ struct PolicyLogCommand: AsyncParsableCommand {
               no-allow-rule       nothing permitted it
               unresolved-address  an address our resolver never handed out
               sni-denied          the TLS server name is not permitted
+              sni-unreadable      a TLS hello the gateway could not read whole
             """
     )
 
