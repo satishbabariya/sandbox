@@ -518,6 +518,37 @@ out=$($B run "$CLONE_IMAGE" --no-tty --allow example.com -- /bin/sh -c '
 check "control: TLS to the allowed name works" "CONTROL_REACHED" "$out"
 check "vouched address with a different SNI is refused" "ATTACK_BLOCKED" "$out"
 
+# The same attack with the ClientHello split across two TLS records, which is
+# legal and which servers reassemble. The first record ends after the random,
+# so the name is only in the second: a gateway that reads one record sees no
+# name at all. Any TLS record back, handshake or alert, means a server read the
+# hello. The control is the same split for the allowed name.
+out=$($B run docker.io/library/python:3.12-alpine --no-tty --allow example.com -- python3 -c '
+import socket, ssl
+def answered(name, ip):
+    inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = ssl.create_default_context().wrap_bio(inc, out, server_hostname=name)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    rec = out.read()
+    body = rec[5:5 + int.from_bytes(rec[3:5], "big")]
+    split = b"".join(rec[:3] + len(p).to_bytes(2, "big") + p for p in (body[:38], body[38:]))
+    s = socket.create_connection((ip, 443), timeout=12)
+    s.sendall(split)
+    try:
+        reply = s.recv(5)
+    except OSError:
+        reply = b""
+    return reply[:1] in (b"\x16", b"\x15")
+ip = socket.gethostbyname("example.com")
+print("SPLIT_CONTROL_REACHED" if answered("example.com", ip) else "SPLIT_CONTROL_BLOCKED")
+print("SPLIT_ATTACK_REACHED" if answered("evil.example.org", ip) else "SPLIT_ATTACK_BLOCKED")
+' 2>&1)
+check "control: a split hello for the allowed name is answered" "SPLIT_CONTROL_REACHED" "$out"
+check "a split hello for a different SNI is refused" "SPLIT_ATTACK_BLOCKED" "$out"
+
 echo "== workspace =="
 
 WORK=$(mktemp -d)
