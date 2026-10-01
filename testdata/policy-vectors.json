@@ -1,0 +1,203 @@
+{
+  "_comment": [
+    "Shared conformance vectors for sandbox's egress-policy Engine.",
+    "host-patterns.json pins the pattern matcher; this file pins the stateful",
+    "engine built on top of it: the resolution ledger, its minimum TTL and",
+    "size cap, dial-time enforcement across every name sharing an address, and",
+    "the SNI re-check. The Go engine (pkg/policy in the vendored gvisor-tap-vsock",
+    "fork) is authoritative; the Swift adapter that will later replace it must",
+    "reproduce every verdict and reason here exactly.",
+    "Format is documented in testdata/policy-vectors.md.",
+    "Add a case here first, then make the Go side pass it."
+  ],
+  "cases": [
+    {
+      "name": "deny wins across every name sharing an address",
+      "allow": ["*.github.com"],
+      "deny": ["gist.github.com"],
+      "steps": [
+        { "resolve": { "host": "api.github.com", "ips": ["140.82.113.4"], "ttlSeconds": 60 } },
+        { "resolve": { "host": "gist.github.com", "ips": ["140.82.113.4"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "140.82.113.4", "port": 443 },
+          "expect": { "allowed": false, "reason": "deny-rule" } }
+      ]
+    },
+    {
+      "name": "an address our resolver never handed out is refused",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "dial": { "proto": "tcp", "ip": "13.37.13.37", "port": 443 },
+          "expect": { "allowed": false, "reason": "unresolved-address" } }
+      ]
+    },
+    {
+      "name": "a resolved allowed address is dialable",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "api.anthropic.com", "ips": ["160.79.104.10"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "160.79.104.10", "port": 443 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "the DNS gate refuses an unallowed name before any resolution",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "query": { "host": "exfil.evil.com" },
+          "expect": { "allowed": false, "reason": "no-allow-rule" } },
+        { "query": { "host": "api.anthropic.com" },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "the DNS gate lets deny beat a broader allow at resolution time",
+      "allow": ["*.github.com"],
+      "deny": ["gist.github.com"],
+      "steps": [
+        { "query": { "host": "api.github.com" },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "query": { "host": "gist.github.com" },
+          "expect": { "allowed": false, "reason": "deny-rule" } }
+      ]
+    },
+    {
+      "name": "a port-qualified allow permits resolution but only its own port at dial",
+      "allow": ["registry.example.com:5000"],
+      "deny": [],
+      "steps": [
+        { "query": { "host": "registry.example.com" },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "resolve": { "host": "registry.example.com", "ips": ["10.11.12.13"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "10.11.12.13", "port": 5000 },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "dial": { "proto": "tcp", "ip": "10.11.12.13", "port": 443 },
+          "expect": { "allowed": false, "reason": "no-allow-rule" } }
+      ]
+    },
+    {
+      "name": "a port-qualified deny does not block resolution, but still blocks its own port at dial",
+      "allow": ["*.example.com"],
+      "deny": ["blocked.example.com:443"],
+      "steps": [
+        { "query": { "host": "blocked.example.com" },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "resolve": { "host": "blocked.example.com", "ips": ["10.20.30.40"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "10.20.30.40", "port": 443 },
+          "expect": { "allowed": false, "reason": "deny-rule" } },
+        { "dial": { "proto": "tcp", "ip": "10.20.30.40", "port": 8080 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "a literal address rule authorises a dial without any DNS",
+      "allow": ["10.0.0.5"],
+      "deny": [],
+      "steps": [
+        { "dial": { "proto": "tcp", "ip": "10.0.0.5", "port": 8080 },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "dial": { "proto": "tcp", "ip": "10.0.0.6", "port": 8080 },
+          "expect": { "allowed": false, "reason": "unresolved-address" } }
+      ]
+    },
+    {
+      "name": "the ledger's 5-minute minimum floors a shorter TTL",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "api.anthropic.com", "ips": ["160.79.104.10"], "ttlSeconds": 60 } },
+        { "advance": { "seconds": 240 } },
+        { "dial": { "proto": "tcp", "ip": "160.79.104.10", "port": 443 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "an expired ledger entry stops authorising its address",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "api.anthropic.com", "ips": ["160.79.104.10"], "ttlSeconds": 60 } },
+        { "advance": { "seconds": 301 } },
+        { "dial": { "proto": "tcp", "ip": "160.79.104.10", "port": 443 },
+          "expect": { "allowed": false, "reason": "unresolved-address" } }
+      ]
+    },
+    {
+      "name": "an empty policy denies every name and every address",
+      "allow": [],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "anything.com", "ips": ["1.1.1.1"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "1.1.1.1", "port": 443 },
+          "expect": { "allowed": false, "reason": "no-allow-rule" } },
+        { "query": { "host": "anything.com" },
+          "expect": { "allowed": false, "reason": "no-allow-rule" } }
+      ]
+    },
+    {
+      "name": "SNI distinguishes names on a shared address",
+      "allow": ["allowed.example.com"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "allowed.example.com", "ips": ["104.20.1.1"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "104.20.1.1", "port": 443 },
+          "expect": { "allowed": true, "reason": "allow-rule" } },
+        { "hello": { "host": "notallowed.example.com", "port": 443 },
+          "expect": { "allowed": false, "reason": "sni-denied" } },
+        { "hello": { "host": "allowed.example.com", "port": 443 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "SNI respects deny the same as a dial",
+      "allow": ["*.github.com"],
+      "deny": ["gist.github.com"],
+      "steps": [
+        { "hello": { "host": "gist.github.com", "port": 443 },
+          "expect": { "allowed": false, "reason": "deny-rule" } },
+        { "hello": { "host": "api.github.com", "port": 443 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "ICMP shares the dial gate at port 0: a bare rule grants it",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "api.anthropic.com", "ips": ["160.79.104.10"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "icmp", "ip": "160.79.104.10", "port": 0 },
+          "expect": { "allowed": true, "reason": "allow-rule" } }
+      ]
+    },
+    {
+      "name": "ICMP shares the dial gate at port 0: a port-qualified rule does not grant it",
+      "allow": ["registry.example.com:5000"],
+      "deny": [],
+      "steps": [
+        { "resolve": { "host": "registry.example.com", "ips": ["10.11.12.13"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "icmp", "ip": "10.11.12.13", "port": 0 },
+          "expect": { "allowed": false, "reason": "no-allow-rule" } }
+      ]
+    },
+    {
+      "name": "the ledger is bounded: past 8192 entries a new address is never recorded",
+      "allow": ["*.anthropic.com"],
+      "deny": [],
+      "steps": [
+        { "fillLedger": { "count": 8192, "ttlSeconds": 60 } },
+        { "resolve": { "host": "api.anthropic.com", "ips": ["160.79.104.10"], "ttlSeconds": 60 } },
+        { "dial": { "proto": "tcp", "ip": "160.79.104.10", "port": 443 },
+          "expect": { "allowed": false, "reason": "unresolved-address" } }
+      ]
+    },
+    {
+      "name": "a malformed pattern is rejected at construction, not silently ignored",
+      "allow": ["*bad.com"],
+      "deny": [],
+      "expectConstructError": true,
+      "steps": []
+    }
+  ]
+}
